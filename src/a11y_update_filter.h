@@ -24,6 +24,10 @@ QAccessible::UpdateHandler bridgeUpdateHandler();
 void markUserActivity();
 bool userActedRecently(int withinMs = 1500);
 
+// Focus events for which `suppress` returns true are dropped (LINE pulling focus into the chat it
+// opens while the user browses the chat list; see A11yEventFilter).
+void setFocusSuppressor(bool (*suppress)(QObject *object));
+
 // Records an NSAccessibility announcement made by the bridge (for the statistics).
 void noteAnnouncement(const QString &text, bool spoken);
 

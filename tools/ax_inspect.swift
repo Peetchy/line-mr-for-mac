@@ -21,6 +21,7 @@ struct Options {
     var pressTitle: String?
     var pressNth = 1
     var pressPrefix = false
+    var navigationOrder = false
 }
 
 func fail(_ message: String, code: Int32 = 1) -> Never {
@@ -52,8 +53,9 @@ func parseOptions() -> Options {
             guard let n = Int(value()), n >= 1 else { fail("--nth expects a number >= 1", code: 64) }
             opts.pressNth = n
         case "--prefix": opts.pressPrefix = true
+        case "--nav": opts.navigationOrder = true
         case "-h", "--help":
-            print("usage: ax_inspect [--pid PID] [--bundle-id ID] [--depth N] [--wait SECONDS] [--press TITLE [--nth N] [--prefix]]")
+            print("usage: ax_inspect [--pid PID] [--bundle-id ID] [--depth N] [--wait SECONDS] [--press TITLE [--nth N] [--prefix]] [--nav]")
             exit(0)
         default: fail("unknown argument: \(arg)", code: 64)
         }
@@ -216,6 +218,19 @@ if let target = opts.pressTitle {
         exit(0)
     }
     fail("error: AXPress on \(quoted(target)) failed with AXError \(result.rawValue)", code: 5)
+}
+
+// --nav: each window's children in VoiceOver's reading order (AXChildrenInNavigationOrder).
+if opts.navigationOrder {
+    for window in children(app) where describe(attribute(window, kAXRoleAttribute as String)) == (kAXWindowRole as String) {
+        print("window \(quoted(describe(attribute(window, kAXTitleAttribute as String))))")
+        let ordered = (attribute(window, "AXChildrenInNavigationOrder") as? [AXUIElement]) ?? []
+        for element in ordered {
+            let n = node(element)
+            print("  role=\(n.role.isEmpty ? "-" : n.role) title=\(quoted(n.title)) desc=\(quoted(n.desc)) val=\(quoted(n.val))")
+        }
+    }
+    exit(0)
 }
 
 var count = 0

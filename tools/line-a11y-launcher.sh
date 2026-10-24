@@ -124,6 +124,8 @@ if [[ -x "$CALL_BIN" ]]; then
             sleep 0.25
         done
         sleep 1
+        # Killing it on purpose is not a crash (src/plugin_main.mm, crash guard).
+        rm -f "$(dirname "$(dirname "$CALL_DEST")")/session.running"
         pkill -x LineCall 2>/dev/null || true
         for _ in $(seq 1 20); do
             pgrep -x LineCall >/dev/null || break

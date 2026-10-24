@@ -86,6 +86,9 @@ if grep -Fq '"Log in"' "$DUMP"; then
     done
     if has_line AXCheckBox "Log me in automatically"; then ok "AXCheckBox 'Log me in automatically'"
     else bad "AXCheckBox 'Log me in automatically' missing"; fi
+    # Clickable texts are links (ported from the Windows bridge).
+    if has_line AXLink "Log in with my smartphone" AXPress; then ok "AXLink 'Log in with my smartphone >' exposes AXPress"
+    else bad "'Log in with my smartphone >' is not an AXLink with AXPress"; fi
     if grep -E "role=AXStaticText " "$DUMP" | grep -Fq 'val="QR code login"'; then
         ok "AXStaticText 'QR code login' has a value"
     else
@@ -97,6 +100,12 @@ if grep -Fq '"Log in"' "$DUMP"; then
     else
         bad "AXStaticText QR instructions missing or empty"
     fi
+    # VoiceOver reading order: the form first, then the QR panel, then the smartphone link.
+    order=$("$AX" --nav 2>/dev/null | grep -E "Email address|Password|Log me in automatically|\"Log in\"|Reset password|QR code login|To scan your QR|title=\"QR code\"|Log in with my smartphone" \
+        | sed -E 's/.*(Email address|Password|Log me in automatically|"Log in"|Reset password|QR code login|To scan your QR|"QR code"|Log in with my smartphone).*/\1/' | tr '\n' '|')
+    expected='Email address|Password|Log me in automatically|"Log in"|Reset password|QR code login|To scan your QR|"QR code"|Log in with my smartphone|'
+    if [[ "$order" == "$expected" ]]; then ok "VoiceOver reading order of the login window"
+    else bad "login reading order is $order"; fi
 else
     skp "login-screen checks (LINE is not on the English login screen)"
 fi
@@ -131,6 +140,9 @@ if grep -Eq 'role=AXRadioButton .*title="Chats"' "$DUMP"; then
         else bad "AXList '$list' has $dead dead children"; fi
     done
     [[ $checked -eq 1 ]] || bad "no AXList titled 'Chats' or 'Friends'"
+    # The message input is named after the open chat ("Message to <chat>").
+    if grep -E "role=AXTextArea " "$DUMP" | grep -Fq 'title="Message to '; then ok "message input is named after the chat"
+    else skp "message input name (no chat open, or LINE not in English)"; fi
     if grep -Eq 'role=AXList .*title="Messages"' "$DUMP"; then
         read -r labelled dead < <(list_stats "Messages")
         if [[ $labelled -gt 0 && $dead -eq 0 ]]; then ok "AXList 'Messages' has $labelled labelled rows"
@@ -148,6 +160,10 @@ if grep -E "role=AXButton " "$DUMP" | grep -vF 'title="" desc=""' | grep -q "AXP
 else
     bad "no labelled AXButton with AXPress"
 fi
+# Every button has a name (standard window buttons are named by their subrole).
+unnamed=$(grep -E "role=AXButton subrole=- " "$DUMP" | grep -cF 'title="" desc=""' || true)
+if [[ "$unnamed" -eq 0 ]]; then ok "no unlabelled AXButtons"
+else bad "$unnamed AXButton(s) without title/description"; fi
 unlabelled=$(grep -E "role=AXTextField " "$DUMP" | grep -cF 'title="" desc=""' || true)
 if [[ "$unlabelled" -eq 0 ]]; then ok "no unlabelled AXTextFields"
 else bad "$unlabelled AXTextField(s) without title/description"; fi

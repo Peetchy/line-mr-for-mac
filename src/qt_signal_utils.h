@@ -25,4 +25,7 @@ bool emitRaw(QObject *sender, int signalIndex, void **args);
 // arguments. Returns false if the signal does not exist.
 bool emitSignal(QObject *sender, const char *signature, void **args = nullptr);
 
+// Is anybody connected to `signature` on `sender`? (QML signal handlers count.)
+bool isSignalConnected(const QObject *sender, const char *signature);
+
 } // namespace line_a11y

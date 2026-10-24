@@ -19,7 +19,7 @@ namespace line_a11y {
 QAccessibleInterface *lineAccessibleFactory(const QString &key, QObject *object);
 
 // Which bridge interface (if any) a widget should get.
-enum class WidgetKind { None, Input, Menu, List, Delegate, Button, Text };
+enum class WidgetKind { None, Input, Menu, List, Delegate, Button, Text, Window, ScrollArea };
 WidgetKind classifyWidget(const QWidget *w);
 
 // If Qt cached a stock interface for a widget that should use a bridge interface (this happens
@@ -34,12 +34,24 @@ void synthesizeClick(QWidget *w);
 // `prepare` (optional) runs first, inside the deferred call.
 void synthesizeClickAt(QWidget *w, QPoint local, std::function<void()> prepare = {});
 
+// A left click in the middle of `w` the way the mouse makes one (enter, move, press, release),
+// sent right away. LINE's chat folder tabs and context menu items act only on such a click.
+void sendMouseClick(QWidget *w);
+
 // Is `w` one of LINE's input classes (LcTextField, PasswordTextField, LcTextArea,
 // ChatDetailInputTextEdit) or a QLineEdit / QTextEdit nested inside an Lc widget?
 bool isLineInputWidget(const QWidget *w);
 
+// The message input of a chat (ChatDetailInputTextEdit, or AutoSuggestTextArea in group chats):
+// a multi-line LINE text field inside the chat panel.
+bool isMessageInput(const QWidget *w);
+
+// Name of the chat shown in the ChatMessagePanel of `w`'s window (first LcText of its header).
+QString chatNameFor(const QWidget *w);
+
 // Accessible name / description for an input, following the precedence in CLAUDE.md:
-// explicit accessibleName -> placeholderText -> class/context heuristics -> nearby LcText.
+// explicit accessibleName -> chat name (message input) -> placeholderText -> class/context
+// heuristics -> nearby LcText.
 QString inputAccessibleName(QWidget *w);
 QString inputAccessibleDescription(QWidget *w);
 
@@ -108,12 +120,17 @@ class LineAccessibleText : public LineAccessibleWidget
 public:
     explicit LineAccessibleText(QWidget *w);
 
+    // Clickable texts ("Log in with smartphone >") are links. Decided per query: LINE connects
+    // clicked() after the widget (and possibly its interface) was created.
+    QAccessible::Role role() const override;
     QAccessible::State state() const override;
+    QStringList actionNames() const override;
 
 protected:
     QString computeName() const override;
     QString computeValue() const override;
     bool isPressable() const override;
+    void press() override;
 };
 
 class LineAccessibleInput : public LineAccessibleWidget,
@@ -128,6 +145,12 @@ public:
     QStringList actionNames() const override;
     void doAction(const QString &actionName) override;
     using LineAccessibleWidget::text;
+
+    // The hint LcText / images inside a text field are not separate elements; real buttons (show
+    // password, clear search) stay reachable.
+    int childCount() const override;
+    QAccessibleInterface *child(int index) const override;
+    int indexOfChild(const QAccessibleInterface *child) const override;
 
     // QAccessibleTextInterface
     void selection(int selectionIndex, int *startOffset, int *endOffset) const override;
@@ -175,6 +198,23 @@ protected:
     QString computeDescription() const override;
 };
 
+// LINE's secondary windows (photos & files, settings, ...) are titled "LINE" or nothing; their
+// name is the title shown in their title bar.
+class LineAccessibleWindow : public QAccessibleWidget
+{
+public:
+    explicit LineAccessibleWindow(QWidget *w);
+    QString text(QAccessible::Text t) const override;
+};
+
+// Qt's scroll-area interface exposes only the viewport and scroll bars; LINE puts headers next to
+// the viewport (Settings > Chats: the "Basic / Hidden chats" tabs). This one exposes every child.
+class LineAccessibleScrollArea : public QAccessibleWidget
+{
+public:
+    explicit LineAccessibleScrollArea(QWidget *w);
+};
+
 class LineAccessibleMenu : public LineAccessibleWidget
 {
 public:
@@ -186,6 +226,9 @@ public:
 protected:
     QString computeName() const override;
     bool isPressable() const override;
+    // Context menu items are clicked like with the mouse (emitting clicked() runs only some
+    // commands); if the menu is still open afterwards, the connected signal is emitted.
+    void press() override;
 
 private:
     static QAccessible::Role roleFor(const QWidget *w);

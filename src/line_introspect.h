@@ -12,6 +12,7 @@
 #include <QtCore/QSize>
 #include <QtCore/QString>
 #include <QtCore/QStringList>
+#include <QtCore/QVariant>
 
 #include <stddef.h>
 #include <stdint.h>
@@ -123,5 +124,38 @@ bool isBadgeText(const QString &text);
 // Text of the closest visible sibling label on the same row (to the right first, then left),
 // or directly above. Used for checkboxes / inputs whose caption is a separate LcText.
 QString nearbyLabelText(QWidget *w);
+
+// The LcText or LcCheckBox right above `w` (within 40 px, starting at most 8 px right of w's left
+// edge), searched from w's parent outwards: labels of combo boxes and fields in Settings.
+QString labelAboveText(QWidget *w);
+
+// --- Properties -----------------------------------------------------------------------------
+
+QVariant readProperty(const QObject *o, const char *name);
+QString stringProp(const QObject *o, const char *name); // cleaned; "" unless a QString property
+int boolProp(const QObject *o, const char *name);       // 1 / 0, -1 if absent
+
+// --- Links ----------------------------------------------------------------------------------
+
+// The first web address ("https://...", "www....") in `lines` (text lines top to bottom; an address
+// that ends its line and goes on in the next ones without spaces was wrapped and is joined). "" if
+// there is none; "www." addresses get "http://".
+QString firstWebAddress(const QStringList &lines);
+
+// The first http(s) link of a message's text: an <a href> target, else a web address in the text.
+QString firstLinkTarget(const QString &html);
+
+// Opens an http(s) address in the user's default browser through macOS (not through Qt, where LINE
+// may have registered handlers of its own). False if it is not http(s) or macOS refused.
+bool openInBrowser(const QString &url);
+
+// --- Localisation ---------------------------------------------------------------------------
+
+// LINE's UI language: bridge-generated labels follow it.
+enum class UiLanguage { English, Thai, Japanese, SimplifiedChinese, TraditionalChinese };
+UiLanguage uiLanguage();
+
+// Bridge-generated label in LINE's UI language ("Photo" -> "รูปภาพ"); English if not translated.
+QString label(const char *english);
 
 } // namespace line_a11y

@@ -1,0 +1,498 @@
+#include "text_capture.h"
+
+#include "a11y_log.h"
+
+#include <QtCore/QElapsedTimer>
+#include <QtCore/QHash>
+#include <QtCore/QPointer>
+
+#include <QtGui/QPaintDevice>
+#include <QtGui/QPaintEngine>
+#include <QtGui/QTextItem>
+#include <QtGui/QFontMetricsF>
+#include <QtGui/QImage>
+#include <QtGui/QPainterPath>
+#include <QtWidgets/QApplication>
+#include <QtWidgets/QWidget>
+
+#include <algorithm>
+#include <cmath>
+
+namespace line_a11y {
+namespace {
+
+// ---- Known icons -----------------------------------------------------------------------------------
+//
+// Some message types are drawn with an icon of their own from LINE's resources (default.dat, mounted
+// at :/resource): the play / pause button of a voice message, ... The images LINE draws are compared
+// with those icons by shape: both are scaled to a small alpha mask (sizes differ with the display
+// scale and @2x variants). Button sprites hold their states side by side.
+
+constexpr int kMaskSide = 12;
+constexpr int kMaxMaskDifference = 28; // mean alpha difference (0-255) still taken as the same icon
+
+struct KnownIcon {
+    const char *path;
+    int slices;
+    const char *name;
+};
+
+const KnownIcon kKnownIcons[] = {
+    { ":/resource/img/basic/chat/chat_word_send_voice_play_icon.png", 4, "voice" },
+    { ":/resource/img/basic/chat/chat_word_send_voice_pause_icon.png", 4, "voice" },
+    { ":/resource/img/basic/chat/chat_word_receive_voice_play_icon.png", 4, "voice" },
+    { ":/resource/img/basic/chat/chat_word_receive_voice_pause_icon.png", 4, "voice" },
+    // The play button over a video's thumbnail (34x34; a white triangle like the voice play icon,
+    // so messageKind() also looks at what it is drawn on).
+    { ":/resource/img/basic/chat/chat_video_icon.svg", 1, "video" },
+    { ":/resource/img/basic/chat/chatcontents/chat_video_icon.svg", 1, "video" },
+    { ":/resource/img/basic/chat/chatcontents/video_icon.svg", 1, "video" },
+    { ":/resource/img/basic/chat/flex_video_play.svg", 1, "video" },
+    { ":/resource/img/basic/chat/chatcontents/no_mov_icon.svg", 1, "video" },
+    { ":/resource/img/basic/chat/chatcontents/no_img_icon.svg", 1, "photo" },
+    // File type icons beside a file's name (45x45).
+    { ":/resource/img/basic/chat/chatcontents/ai_ic.svg", 1, "file" },
+    { ":/resource/img/basic/chat/chatcontents/docx_ic.svg", 1, "file" },
+    { ":/resource/img/basic/chat/chatcontents/mic_ic.svg", 1, "file" },
+    { ":/resource/img/basic/chat/chatcontents/mov_ic.svg", 1, "file" },
+    { ":/resource/img/basic/chat/chatcontents/mp3_ic.svg", 1, "file" },
+    { ":/resource/img/basic/chat/chatcontents/pdf_ic.svg", 1, "file" },
+    { ":/resource/img/basic/chat/chatcontents/ppt_ic.svg", 1, "file" },
+    { ":/resource/img/basic/chat/chatcontents/psd_ic.svg", 1, "file" },
+    { ":/resource/img/basic/chat/chatcontents/txt_ic.svg", 1, "file" },
+    { ":/resource/img/basic/chat/chatcontents/xlsx_ic.svg", 1, "file" },
+    { ":/resource/img/basic/chat/chatcontents/zip_ic.svg", 1, "file" },
+    // The red flag in a location's bubble (14x16).
+    { ":/resource/img/basic/chat/chat_word_flag.png", 1, "location" },
+    // Sound stickers and stickers that could not be loaded.
+    { ":/resource/img/basic/chat/sticker_icon_sound.png", 1, "sticker" },
+    { ":/resource/img/basic/chat/chat_word_sticker_error_icon.svg", 1, "sticker" },
+    { ":/resource/img/basic/chat/chat_word_send_sticker_error_icon.png", 1, "sticker" },
+    { ":/resource/img/basic/chat/chat_word_receive_sticker_error_icon.png", 1, "sticker" },
+    // Chat header buttons LINE makes from an LcImage with a pixmap and no source (paintedIcon();
+    // the names are iconLabels() keys).
+    { ":/resource/img/basic/chat/chatroom-call.png", 1, "chatroom-call" },
+    { ":/resource/img/basic/chat/chatroom-call-solid.svg", 1, "chatroom-call" },
+    { ":/resource/img/basic/chat/chatroom-video-call-solid.svg", 1, "chatroom-video-call" },
+};
+
+struct IconMask {
+    QByteArray alpha; // kMaskSide x kMaskSide
+    qreal aspect = 1;
+    const char *name = nullptr;
+};
+
+QByteArray alphaMask(const QImage &image)
+{
+    const QImage small = image.scaled(kMaskSide, kMaskSide, Qt::IgnoreAspectRatio, Qt::SmoothTransformation)
+                             .convertToFormat(QImage::Format_Alpha8);
+    QByteArray mask;
+    mask.reserve(kMaskSide * kMaskSide);
+    for (int y = 0; y < kMaskSide; ++y)
+        mask.append(reinterpret_cast<const char *>(small.constScanLine(y)), kMaskSide);
+    return mask;
+}
+
+const QList<IconMask> &iconMasks()
+{
+    static const QList<IconMask> masks = [] {
+        QList<IconMask> list;
+        for (const KnownIcon &icon : kKnownIcons) {
+            const QImage sprite(QString::fromLatin1(icon.path));
+            if (sprite.isNull()) {
+                a11yLog("[icons] %s not found", icon.path);
+                continue;
+            }
+            const int w = sprite.width() / icon.slices;
+            for (int i = 0; i < icon.slices; ++i) {
+                const QImage slice = sprite.copy(i * w, 0, w, sprite.height());
+                list.append({ alphaMask(slice), qreal(w) / sprite.height(), icon.name });
+            }
+        }
+        return list;
+    }();
+    return masks;
+}
+
+// The known icon `image` shows, or nullptr. Results are kept per image (LINE draws the same
+// pixmaps again and again).
+const char *knownIcon(qint64 key, const QImage &image)
+{
+    static QHash<qint64, const char *> cache;
+    if (const auto it = cache.constFind(key); key && it != cache.constEnd())
+        return it.value();
+    const char *found = nullptr;
+    if (!image.isNull()) {
+        const QByteArray mask = alphaMask(image);
+        const qreal aspect = qreal(image.width()) / image.height();
+        int best = kMaxMaskDifference + 1;
+        for (const IconMask &known : iconMasks()) {
+            if (qAbs(aspect - known.aspect) > known.aspect * 0.15)
+                continue;
+            int sum = 0;
+            for (int i = 0; i < mask.size(); ++i)
+                sum += qAbs(int(quint8(mask[i])) - int(quint8(known.alpha[i])));
+            const int mean = sum / int(mask.size());
+            if (mean < best) {
+                best = mean;
+                found = known.name;
+            }
+        }
+    }
+    if (cache.size() > 4000)
+        cache.clear();
+    if (key)
+        cache.insert(key, found);
+    return found;
+}
+
+class TextCaptureEngine final : public QPaintEngine {
+public:
+    explicit TextCaptureEngine(CaptureResult *out)
+        : QPaintEngine(QPaintEngine::AllFeatures), m_out(out)
+    {
+    }
+
+    bool begin(QPaintDevice *) override { return true; }
+    bool end() override { return true; }
+    Type type() const override { return QPaintEngine::User; }
+
+    void updateState(const QPaintEngineState &newState) override
+    {
+        const QPaintEngine::DirtyFlags dirty = newState.state();
+        if (dirty & QPaintEngine::DirtyTransform)
+            m_transform = newState.transform();
+        if (dirty & QPaintEngine::DirtyOpacity)
+            m_opacity = newState.opacity();
+        if (dirty & QPaintEngine::DirtyBrush)
+            m_brush = newState.brush();
+        if (dirty & QPaintEngine::DirtyPen)
+            m_penAlpha = newState.pen().color().alpha();
+        if (dirty & (QPaintEngine::DirtyClipEnabled | QPaintEngine::DirtyClipPath | QPaintEngine::DirtyClipRegion))
+            m_clipped = newState.isClipEnabled() && newState.clipOperation() != Qt::NoClip;
+    }
+
+    void drawTextItem(const QPointF &p, const QTextItem &ti) override
+    {
+        // Invisible text (faded-out hover menus over photos, hidden labels) is not on screen.
+        if (m_opacity <= 0.01 || m_penAlpha == 0)
+            return;
+        const QString text = ti.text();
+        if (text.isEmpty()) {
+            ++m_out->glyphRunsWithoutText;
+            return;
+        }
+        const qreal width = QFontMetricsF(ti.font()).horizontalAdvance(text) * m_transform.m11();
+        m_out->items.push_back({ m_transform.map(p), text, width });
+    }
+
+    void drawPixmap(const QRectF &r, const QPixmap &pm, const QRectF &) override
+    {
+        recordPixmap(r);
+        recordImage(r, pm.size(), pm.hasAlphaChannel(), pm.cacheKey(), [&pm] { return pm.toImage(); });
+    }
+    void drawImage(const QRectF &r, const QImage &image, const QRectF &, Qt::ImageConversionFlags) override
+    {
+        recordPixmap(r);
+        recordImage(r, image.size(), image.hasAlphaChannel(), image.cacheKey(), [&image] { return image; });
+    }
+    void drawTiledPixmap(const QRectF &, const QPixmap &, const QPointF &) override { ++m_out->pixmaps; }
+    void drawPolygon(const QPointF *, int, PolygonDrawMode) override {}
+    void drawPolygon(const QPoint *, int, PolygonDrawMode) override {}
+    void drawRects(const QRectF *rects, int n) override
+    {
+        for (int i = 0; i < n; ++i)
+            recordShape(rects[i]);
+    }
+    void drawRects(const QRect *rects, int n) override
+    {
+        for (int i = 0; i < n; ++i)
+            recordShape(rects[i]);
+    }
+    void drawLines(const QLineF *, int) override {}
+    void drawLines(const QLine *, int) override {}
+    void drawEllipse(const QRectF &r) override { recordShape(r); }
+    void drawEllipse(const QRect &r) override { recordShape(r); }
+    void drawPath(const QPainterPath &path) override { recordShape(path.boundingRect()); }
+    void drawPoints(const QPointF *, int) override {}
+    void drawPoints(const QPoint *, int) override {}
+
+private:
+    void recordPixmap(const QRectF &r)
+    {
+        ++m_out->pixmaps;
+        m_out->pixmapRects << m_transform.mapRect(r);
+    }
+
+    template <typename ToImage>
+    void recordImage(const QRectF &r, const QSize &size, bool alpha, qint64 key, ToImage toImage)
+    {
+        if (m_opacity <= 0.01)
+            return;
+        PaintedImage pi;
+        pi.rect = m_transform.mapRect(r);
+        pi.size = size;
+        pi.alpha = alpha;
+        pi.clipped = m_clipped;
+        if (alpha && size.width() > 2 && size.height() > 2) {
+            const QImage image = toImage();
+            const int w = image.width() - 1, h = image.height() - 1;
+            pi.clearCorners = qAlpha(image.pixel(0, 0)) < 16 && qAlpha(image.pixel(w, 0)) < 16
+                           && qAlpha(image.pixel(0, h)) < 16 && qAlpha(image.pixel(w, h)) < 16;
+            // Icons only: pictures are larger.
+            if (size.width() <= 96 && size.height() <= 96 && size.width() >= 8 && size.height() >= 8)
+                if (const char *icon = knownIcon(key, image))
+                    pi.icon = QLatin1String(icon);
+        }
+        m_out->images << pi;
+    }
+
+    void recordShape(const QRectF &r)
+    {
+        if (m_opacity <= 0.01)
+            return;
+        PaintedShape s;
+        s.rect = m_transform.mapRect(r);
+        s.brush = int(m_brush.style());
+        if (m_brush.style() == Qt::TexturePattern)
+            s.texture = m_brush.textureImage().isNull() ? m_brush.texture().size() : m_brush.textureImage().size();
+        m_out->shapes << s;
+    }
+
+    CaptureResult *m_out;
+    QTransform m_transform;
+    qreal m_opacity = 1;
+    int m_penAlpha = 255;
+    bool m_clipped = false;
+    QBrush m_brush;
+};
+
+// Spare room right of and below the rendered area, for painting that runs a little past it.
+constexpr int kMargin = 64;
+
+// A real QImage (so code in LINE that inspects or casts the painter's device to QImage, or
+// writes pixels into it, stays within valid memory) whose paint engine records text instead of
+// rasterising. LINE crashed with heap corruption while message rows with images were rendered
+// into the previous, bare QPaintDevice. (Rendering at an offset inside a larger image loses the
+// text of tall message rows: LcListView paints its rows relative to the device origin.)
+class TextCaptureDevice final : public QImage {
+public:
+    TextCaptureDevice(const QSize &size, int dpi, CaptureResult *out)
+        : QImage(size.expandedTo(QSize(1, 1)) + QSize(kMargin, kMargin), QImage::Format_ARGB32_Premultiplied),
+          m_engine(out)
+    {
+        const int dotsPerMeter = int(std::lround(dpi / 0.0254));
+        setDotsPerMeterX(dotsPerMeter);
+        setDotsPerMeterY(dotsPerMeter);
+        fill(Qt::white);
+    }
+
+    QPaintEngine *paintEngine() const override { return &m_engine; }
+
+private:
+    mutable TextCaptureEngine m_engine;
+};
+
+bool g_capturing = false;
+bool g_safeMode = false;
+
+// Rendering re-enters LINE's paint code: never while LINE itself is painting (a screen-reader
+// query can arrive from a message loop LINE runs inside a paint event) or while another capture
+// is running.
+bool captureAllowed()
+{
+    if (g_capturing)
+        return false;
+    const QWidgetList widgets = QApplication::allWidgets();
+    for (QWidget *w : widgets) {
+        if (w->paintingActive())
+            return false;
+    }
+    return true;
+}
+
+struct CaptureScope {
+    CaptureScope() { g_capturing = true; }
+    ~CaptureScope() { g_capturing = false; }
+};
+
+} // namespace
+
+CaptureResult captureWidgetText(QWidget *w, bool children)
+{
+    CaptureResult result;
+    if (!w || w->width() <= 0 || w->height() <= 0)
+        return result;
+    if (!captureAllowed()) {
+        result.skipped = true;
+        return result;
+    }
+    CaptureScope scope;
+    TextCaptureDevice dev(w->size(), w->logicalDpiX() > 0 ? w->logicalDpiX() : 96, &result);
+    QWidget::RenderFlags flags = QWidget::DrawWindowBackground;
+    if (children)
+        flags |= QWidget::DrawChildren;
+    w->render(&dev, QPoint(), QRegion(), flags);
+    return result;
+}
+
+void setSafeMode(bool on)
+{
+    g_safeMode = on;
+}
+
+bool safeMode()
+{
+    return g_safeMode;
+}
+
+CaptureResult captureRegionText(QWidget *w, const QRect &rect)
+{
+    CaptureResult result;
+    if (g_safeMode) {
+        result.skipped = true;
+        return result;
+    }
+    const QRect area = rect & (w ? w->rect() : QRect());
+    if (area.isEmpty())
+        return result;
+    if (!captureAllowed()) {
+        result.skipped = true;
+        return result;
+    }
+    CaptureScope scope;
+    TextCaptureDevice dev(area.size(), w->logicalDpiX() > 0 ? w->logicalDpiX() : 96, &result);
+    // render() maps the region's top-left to the target offset; the engine does not clip, so
+    // neighbouring rows may still draw: keep what lies inside `rect`. LINE draws a row whole even when
+    // part of it is scrolled out (a message taller than the list), so that part is kept too.
+    w->render(&dev, QPoint(), QRegion(area), QWidget::DrawChildren);
+    // From the rendered area's coordinates to rect's.
+    const QPointF offset = area.topLeft() - rect.topLeft();
+    auto inside = [&rect](const QRectF &r) { return r.bottom() > 0 && r.top() < rect.height(); };
+    QList<CapturedText> itemsInside;
+    for (CapturedText it : std::as_const(result.items)) {
+        it.pos += offset;
+        if (it.pos.y() > 0 && it.pos.y() <= rect.height() + 2)
+            itemsInside << it;
+    }
+    result.items = itemsInside;
+    QList<QRectF> pixmapsInside;
+    for (const QRectF &r : std::as_const(result.pixmapRects)) {
+        if (inside(r.translated(offset)))
+            pixmapsInside << r.translated(offset);
+    }
+    result.pixmapRects = pixmapsInside;
+    result.pixmaps = int(pixmapsInside.size());
+    QList<PaintedImage> imagesInside;
+    for (PaintedImage pi : std::as_const(result.images)) {
+        pi.rect.translate(offset);
+        if (inside(pi.rect))
+            imagesInside << pi;
+    }
+    result.images = imagesInside;
+    QList<PaintedShape> shapesInside;
+    for (PaintedShape s : std::as_const(result.shapes)) {
+        s.rect.translate(offset);
+        if (inside(s.rect))
+            shapesInside << s;
+    }
+    result.shapes = shapesInside;
+    return result;
+}
+
+QString capturedTextInReadingOrder(const CaptureResult &r)
+{
+    QList<CapturedText> items = r.items;
+    // Items on (roughly) the same baseline are one line; 4 px tolerates mixed fonts.
+    std::stable_sort(items.begin(), items.end(), [](const CapturedText &a, const CapturedText &b) {
+        if (std::abs(a.pos.y() - b.pos.y()) > 4)
+            return a.pos.y() < b.pos.y();
+        return a.pos.x() < b.pos.x();
+    });
+    // Thai is written without spaces between words and LINE wraps it anywhere, so a line break
+    // between two Thai characters is not a word boundary.
+    auto isThai = [](QChar c) { return c.unicode() >= 0x0E00 && c.unicode() <= 0x0E7F; };
+    QString out;
+    qreal lastY = -1e9;
+    for (const CapturedText &it : items) {
+        if (!out.isEmpty() && !it.text.isEmpty() && std::abs(it.pos.y() - lastY) > 4)
+            out += isThai(out.back()) && isThai(it.text.front()) ? QString() : QStringLiteral("\n");
+        out += it.text;
+        lastY = it.pos.y();
+    }
+    return out;
+}
+
+namespace {
+
+// Painted text is recomputed at most this often per widget (VoiceOver asks for names repeatedly).
+constexpr qint64 kPaintedTextTtlMs = 300;
+
+struct PaintedTextEntry {
+    QPointer<QWidget> widget;
+    QString text;
+    QString icon; // knownIcon() name of the first recognised image, e.g. "chatroom-call"
+    qint64 stamp = 0;
+};
+
+QElapsedTimer &paintClock()
+{
+    static QElapsedTimer t;
+    if (!t.isValid())
+        t.start();
+    return t;
+}
+
+// What `w` painted (text and the first known icon), rendered at most every kPaintedTextTtlMs.
+PaintedTextEntry paintedEntry(QWidget *w)
+{
+    if (!w || !w->isVisible() || w->width() <= 0 || w->height() <= 0 || w->paintingActive())
+        return {};
+    static QHash<const QWidget *, PaintedTextEntry> cache;
+    const qint64 now = paintClock().elapsed();
+    auto it = cache.find(w);
+    if (it != cache.end() && it->widget == w && now - it->stamp < kPaintedTextTtlMs)
+        return *it;
+    if (cache.size() > 4096) {
+        for (auto i = cache.begin(); i != cache.end();)
+            i = (!i->widget || now - i->stamp > 10 * kPaintedTextTtlMs) ? cache.erase(i) : std::next(i);
+    }
+    const CaptureResult cap = captureWidgetText(w, false);
+    if (cap.skipped) // LINE is painting: keep the previous reading
+        return it != cache.end() && it->widget == w ? *it : PaintedTextEntry();
+    QString text = capturedTextInReadingOrder(cap);
+    text.replace(u'\n', u' ');
+    PaintedTextEntry entry { QPointer<QWidget>(w), text.simplified(), QString(), now };
+    for (const PaintedImage &pi : cap.images) {
+        if (!pi.icon.isEmpty()) {
+            entry.icon = pi.icon;
+            break;
+        }
+    }
+    cache.insert(w, entry);
+    return entry;
+}
+
+} // namespace
+
+QStringList knownIconReport()
+{
+    QStringList lines;
+    for (const KnownIcon &icon : kKnownIcons)
+        lines << QStringLiteral("%1 %2 (%3)").arg(QImage(QString::fromLatin1(icon.path)).isNull() ? QStringLiteral("missing")
+                                                                                                    : QStringLiteral("found"),
+                                                  QLatin1StringView(icon.path), QLatin1StringView(icon.name));
+    return lines;
+}
+
+QString paintedText(QWidget *w)
+{
+    return paintedEntry(w).text;
+}
+
+QString paintedIcon(QWidget *w)
+{
+    return paintedEntry(w).icon;
+}
+
+} // namespace line_a11y

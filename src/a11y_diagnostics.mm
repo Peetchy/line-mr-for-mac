@@ -3,6 +3,8 @@
 #include "a11y_log.h"
 #include "accessible_widgets.h"
 #include "line_introspect.h"
+#include "native_buttons.h"
+#include "text_capture.h"
 
 #include <QtCore/QAbstractItemModel>
 #include <QtCore/QDate>
@@ -286,6 +288,37 @@ bool writeWidgetDump()
             continue;
         out << "\n## window " << top->metaObject()->className() << " \"" << top->windowTitle() << "\"\n";
         dumpWidget(out, top, 0);
+        out << "\n## painted texts and icons (text_capture)\n";
+        for (QWidget *w : top->findChildren<QWidget *>()) {
+            if (!w->isVisible() || !inheritsAnyClass(w, { "LcText", "LcButton", "LcImage", "LcCheckBox", "LcTextField" }))
+                continue;
+            const QString text = paintedText(w);
+            const QString icon = paintedIcon(w);
+            if (!text.isEmpty() || !icon.isEmpty())
+                out << "  " << w->metaObject()->className() << " painted=\"" << text.left(80) << "\" icon=" << icon << "\n";
+        }
+        for (QAbstractItemView *view : top->findChildren<QAbstractItemView *>()) {
+            if (!view->isVisible() || !view->model())
+                continue;
+            out << "  rows of " << view->metaObject()->className() << ":\n";
+            for (int r = 0; r < view->model()->rowCount(view->rootIndex()) && r < 60; ++r) {
+                const QRect rect = view->visualRect(view->model()->index(r, 0, view->rootIndex()));
+                if (!rect.intersects(view->viewport()->rect()))
+                    continue;
+                const CaptureResult cap = captureRegionText(view->viewport(), rect);
+                out << "    row " << r << " " << rect.width() << "x" << rect.height() << (cap.skipped ? " SKIPPED" : "")
+                    << " text=\"" << capturedTextInReadingOrder(cap).replace(QLatin1Char('\n'), QLatin1StringView(" | ")).left(160)
+                    << "\"";
+                for (const PaintedImage &pi : cap.images)
+                    out << " img[" << int(pi.rect.x()) << "," << int(pi.rect.y()) << " " << int(pi.rect.width()) << "x"
+                        << int(pi.rect.height()) << (pi.alpha ? " a" : "") << (pi.clipped ? " clip" : "")
+                        << (pi.clearCorners ? " cc" : "") << (pi.icon.isEmpty() ? QString() : QStringLiteral(" ") + pi.icon) << "]";
+                for (const PaintedShape &sh : cap.shapes)
+                    out << " shape[" << int(sh.rect.x()) << "," << int(sh.rect.y()) << " " << int(sh.rect.width()) << "x"
+                        << int(sh.rect.height()) << "]";
+                out << "\n";
+            }
+        }
         out << "\n## accessible tree of item views\n";
         for (QAbstractItemView *view : top->findChildren<QAbstractItemView *>()) {
             if (view->isVisible())
@@ -332,6 +365,12 @@ bool writeWidgetDump()
         return found;
     };
     // Render each visible message row offscreen; compare the picture with the delegate's texts.
+    out << "\n## native buttons\n";
+    for (const QString &line : nativeButtonReport())
+        out << "  " << line << "\n";
+    out << "\n## known icons\n";
+    for (const QString &line : knownIconReport())
+        out << "  " << line << "\n";
     out << "\n## rendered message rows\n";
     for (QWidget *top : QApplication::topLevelWidgets()) {
         for (QAbstractItemView *view : top->findChildren<QAbstractItemView *>()) {

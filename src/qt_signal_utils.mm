@@ -69,6 +69,10 @@ bool localSignalIndex(const QObject *sender, int index, const QMetaObject **decl
     return false;
 }
 
+struct SignalPeek : QObject {
+    using QObject::isSignalConnected;
+};
+
 } // namespace
 
 int signalIndex(const QObject *sender, const char *signature)
@@ -97,6 +101,15 @@ bool emitRaw(QObject *sender, int signal, void **args)
 bool emitSignal(QObject *sender, const char *signature, void **args)
 {
     return sender && emitRaw(sender, signalIndex(sender, signature), args);
+}
+
+bool isSignalConnected(const QObject *sender, const char *signature)
+{
+    const int index = sender ? signalIndex(sender, signature) : -1;
+    if (index < 0)
+        return false;
+    const auto *peek = static_cast<const SignalPeek *>(sender);
+    return peek->isSignalConnected(sender->metaObject()->method(index));
 }
 
 } // namespace line_a11y

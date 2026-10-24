@@ -1,0 +1,84 @@
+LINE MR: ส่วนเสริม VoiceOver สำหรับ LINE บน Mac
+(English below)
+
+สิ่งที่ต้องมี
+- Mac ชิป Apple Silicon (M1 ขึ้นไป) และ macOS 14 ขึ้นไป
+- LINE จาก Mac App Store (ทดสอบกับ LINE 26.5.0)
+
+วิธีติดตั้ง เลือกแบบใดแบบหนึ่ง
+
+แบบที่ 1: ใช้ตัวติดตั้ง (แนะนำสำหรับผู้ใช้ VoiceOver)
+1. เปิดไฟล์ "Install LINE MR.pkg"
+2. ถ้า macOS แจ้งว่าเปิดไม่ได้ ให้กด Done แล้วทำตามหัวข้อ "เมื่อ macOS บล็อกการเปิด" ด้านล่าง
+3. กด Continue ไปเรื่อย ๆ จนถึง Install ใส่รหัสผ่านของเครื่อง แล้วกด Close
+
+แบบที่ 2: ลากไปวาง
+1. ลาก "LINE MR" ไปวางที่ "Applications"
+   (ผู้ใช้ VoiceOver: เลือก LINE MR กด Command+C ไปที่โฟลเดอร์ Applications แล้วกด Command+V)
+
+วิธีใช้
+1. ปิด LINE ก่อน (ถ้าไม่ปิด LINE MR จะถามแล้วเปิด LINE ใหม่ให้)
+2. เปิด Applications > LINE MR ระบบจะเปิด LINE พร้อมส่วนเสริม VoiceOver
+3. ต่อจากนี้ให้เปิด LINE ผ่าน LINE MR ทุกครั้ง ถ้าเปิด LINE โดยตรง ส่วนเสริมจะไม่ทำงาน
+   แนะนำให้วาง LINE MR ไว้ใน Dock แทน LINE
+
+เมื่อ macOS บล็อกการเปิด (Gatekeeper)
+LINE MR ไม่ได้เซ็นด้วยบัญชี Apple Developer ครั้งแรก macOS จึงแจ้งว่า
+"Apple could not verify LINE MR is free of malware" ให้อนุญาตครั้งเดียวดังนี้
+1. กด Done ในกล่องข้อความนั้น
+2. เปิด System Settings > Privacy & Security
+   (หรือพิมพ์ใน Terminal: open "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension")
+3. เลื่อนลงไปที่หัวข้อ Security จะมีข้อความว่า LINE MR ถูกบล็อก กด "Open Anyway"
+4. ใส่รหัสผ่านหรือใช้ Touch ID แล้วกด "Open Anyway" อีกครั้ง
+ทำแบบเดียวกันกับ "Install LINE MR.pkg" ถ้าตัวติดตั้งถูกบล็อก
+
+อีกวิธีคือใช้ Terminal ปลดล็อกไฟล์ที่ดาวน์โหลดมา ก่อนเปิด (แก้ชื่อไฟล์ให้ตรง):
+  xattr -dr com.apple.quarantine ~/Downloads/LINE-MR-*.dmg
+หรือหลังติดตั้งแล้ว:
+  xattr -dr com.apple.quarantine "/Applications/LINE MR.app"
+
+รายละเอียดเพิ่มเติม รวมถึงการปิด Gatekeeper ทั้งเครื่อง อยู่ใน README.md ของโครงการ
+
+ถอนการติดตั้ง
+1. ลบ Applications > LINE MR
+2. ลบส่วนเสริมที่ติดตั้งไว้ โดยพิมพ์ใน Terminal:
+   rm -rf "$(getconf DARWIN_USER_CACHE_DIR)jp.naver.line.mac/a11y" "$(getconf DARWIN_USER_CACHE_DIR)jp.naver.line.mac.LineCall/a11y"
+3. ปิดแล้วเปิด LINE ใหม่
+
+ปัญหาการใช้งาน: ดูบันทึกได้ที่ ~/Library/Logs/LINE MR.log
+LINE MR เป็นโครงการอิสระ ไม่เกี่ยวข้องกับ LY Corporation
+
+
+----------------------------------------------------------------------
+English
+
+Requirements
+- A Mac with Apple silicon (M1 or later), macOS 14 or later
+- LINE from the Mac App Store (tested with LINE 26.5.0)
+
+Install (either way)
+A. Open "Install LINE MR.pkg" and follow the steps (recommended with VoiceOver).
+B. Drag "LINE MR" onto "Applications" (or select it, Command+C, open Applications, Command+V).
+
+Use
+- Open Applications > LINE MR. It opens LINE with VoiceOver support.
+- Always open LINE through LINE MR; opening LINE directly starts it without VoiceOver support.
+  Keep LINE MR in the Dock instead of LINE.
+
+If macOS blocks it (Gatekeeper)
+LINE MR is not signed with an Apple Developer ID, so macOS blocks the first launch.
+1. Click Done.
+2. Open System Settings > Privacy & Security.
+3. Under Security, next to the message about LINE MR, click "Open Anyway".
+4. Enter your password (or use Touch ID) and click "Open Anyway" again.
+Do the same for "Install LINE MR.pkg" if the installer is blocked.
+Or, in Terminal, before opening:  xattr -dr com.apple.quarantine ~/Downloads/LINE-MR-*.dmg
+
+Uninstall
+1. Delete Applications > LINE MR.
+2. In Terminal:
+   rm -rf "$(getconf DARWIN_USER_CACHE_DIR)jp.naver.line.mac/a11y" "$(getconf DARWIN_USER_CACHE_DIR)jp.naver.line.mac.LineCall/a11y"
+3. Quit and reopen LINE.
+
+Log: ~/Library/Logs/LINE MR.log
+LINE MR is an unofficial project, not affiliated with LY Corporation.

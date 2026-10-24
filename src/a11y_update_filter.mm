@@ -59,6 +59,8 @@ QString eventKey(QAccessibleEvent *event)
     return QStringLiteral("%1 %2").arg(type ? QLatin1StringView(type) : QLatin1StringView("?"), cls);
 }
 
+bool (*g_focusSuppressor)(QObject *) = nullptr;
+
 QElapsedTimer &activityClock()
 {
     static QElapsedTimer clock;
@@ -103,6 +105,11 @@ void handleUpdate(QAccessibleEvent *event)
     QPlatformAccessibility *platform = platformAccessibility();
     if (!platform)
         return;
+    if (event->type() == QAccessible::Focus && g_focusSuppressor && event->object()
+        && g_focusSuppressor(event->object())) {
+        stats().dropped[eventKey(event)]++;
+        return;
+    }
     // LINE constantly updates widgets in the background (unread badges, timestamps, list rows).
     // Only report changes the user is looking at or has just caused.
     if (isChangeNotification(event->type()) && !userActedRecently() && !concernsFocus(event)) {
@@ -136,6 +143,11 @@ bool userActedRecently(int withinMs)
 {
     const QElapsedTimer &clock = activityClock();
     return clock.isValid() && clock.elapsed() <= withinMs;
+}
+
+void setFocusSuppressor(bool (*suppress)(QObject *object))
+{
+    g_focusSuppressor = suppress;
 }
 
 QAccessible::UpdateHandler bridgeUpdateHandler()

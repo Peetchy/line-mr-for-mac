@@ -10,8 +10,11 @@
 #include "call_launch_hook.h"
 #include "line_introspect.h"
 #include "line_metadata.h"
+#include "navigation_order.h"
+#include "text_capture.h"
 
 #include <QtCore/QCoreApplication>
+#include <QtCore/QFile>
 #include <QtCore/QMetaObject>
 #include <QtCore/QTimer>
 #include <QtCore/qplugin.h>
@@ -76,6 +79,36 @@ void pinSelf()
         dlopen(info.dli_fname, RTLD_NOLOAD | RTLD_NODELETE);
 }
 
+// Crash guard: a marker file exists while LINE runs with the bridge and is removed when LINE
+// quits normally. If LINE crashed twice in a row, start in safe mode (no rendering of list rows,
+// the riskiest part). Tools that kill LINE on purpose delete the marker first.
+void checkPreviousSessions(QApplication *app)
+{
+    const QString dir = QString::fromUtf8(a11yDirectory()) + QLatin1Char('/');
+    const QString marker = dir + QStringLiteral("session.running");
+    const QString counter = dir + QStringLiteral("crash-count");
+    int crashes = 0;
+    if (QFile::exists(marker)) {
+        QFile c(counter);
+        if (c.open(QIODevice::ReadOnly))
+            crashes = c.readAll().trimmed().toInt();
+        ++crashes;
+        a11yLog("[guard] previous LINE session did not end normally (%d in a row)", crashes);
+    }
+    if (QFile c(counter); c.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        c.write(QByteArray::number(crashes));
+    if (QFile m(marker); m.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        m.write(QByteArray::number(qint64(getpid())));
+    if (crashes >= 2) {
+        setSafeMode(true);
+        a11yLog("[guard] safe mode: list rows are not rendered");
+    }
+    QObject::connect(app, &QCoreApplication::aboutToQuit, [marker, counter] {
+        QFile::remove(marker);
+        QFile::remove(counter);
+    });
+}
+
 void startBridge()
 {
     if (g_bridgeStarted)
@@ -87,7 +120,9 @@ void startBridge()
         return;
     }
     g_bridgeStarted = true;
+    checkPreviousSessions(app);
     installCocoaSubroleFix();
+    installNavigationOrder();
 
     enforceAccessibilityHandler("startBridge");
     QAccessible::removeFactory(lineAccessibleFactory);

@@ -1,0 +1,94 @@
+# Builds LINE MR (the .dmg and the .pkg) and publishes them as a GitHub release.
+#
+# - Push a tag "vX.Y.Z" to build and release version X.Y.Z.
+# - Run it by hand (Actions > Release > Run workflow) to build without releasing; the files are kept
+#   as the run's artifact.
+#
+# GitHub's runners have no LINE.app, so the bridge is built against the official Qt 6.6.3 (the
+# version LINE ships). Its imports are the same as when built against LINE's own Qt frameworks.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-14 # Apple silicon
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Qt 6.6.3
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.6.3"
+          host: mac
+          target: desktop
+          arch: clang_64
+          archives: qtbase qtdeclarative
+          cache: true
+          setup-python: true
+
+      - name: Version
+        id: version
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="$(sed -n 's/^VERSION *?= *//p' Makefile)-${GITHUB_SHA::7}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Building LINE MR $version"
+
+      - name: Build
+        run: make dist QT_FW="$QT_ROOT_DIR/lib" VERSION="${{ steps.version.outputs.version }}"
+
+      - name: Check the app
+        run: |
+          app="build/LINE MR.app"
+          codesign -v --strict "$app"
+          lipo -info "$app/Contents/MacOS/LINE MR" "$app/Contents/Resources/libline_a11y.dylib"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$app/Contents/Info.plist"
+
+      - name: Checksums
+        run: |
+          cd build
+          shasum -a 256 LINE-MR-*.dmg LINE-MR-*.pkg | tee SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LINE-MR-${{ steps.version.outputs.version }}
+          path: |
+            build/LINE-MR-*.dmg
+            build/LINE-MR-*.pkg
+            build/SHA256SUMS.txt
+
+      - name: Publish release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          cat > notes.md <<EOF
+          ## ดาวน์โหลด / Download
+
+          - **LINE-MR-$VERSION.dmg**: แนะนำ มีทั้งตัวติดตั้ง (.pkg) และตัวโปรแกรม / recommended, contains the installer and the app
+          - **LINE-MR-$VERSION.pkg**: ตัวติดตั้งอย่างเดียว / installer only
+
+          ต้องใช้ Mac ชิป Apple Silicon, macOS 14 ขึ้นไป และ LINE จาก Mac App Store (ทดสอบกับ LINE 26.5.0)
+          Requires Apple silicon, macOS 14 or later, and LINE from the Mac App Store (tested with LINE 26.5.0).
+
+          LINE MR ไม่ได้เซ็นด้วย Apple Developer ID ครั้งแรกต้องกด **Open Anyway** ใน System Settings > Privacy & Security
+          ดูวิธีติดตั้งทีละขั้นได้ใน [README](https://github.com/$GITHUB_REPOSITORY#การติดตั้งสำหรับผู้ใช้--installation)
+          Not signed with an Apple Developer ID: allow it once under System Settings > Privacy & Security > Open Anyway. Step-by-step instructions are in the README.
+
+          SHA-256: ดูไฟล์ SHA256SUMS.txt
+          EOF
+          gh release create "$GITHUB_REF_NAME" \
+            "build/LINE-MR-$VERSION.dmg" "build/LINE-MR-$VERSION.pkg" build/SHA256SUMS.txt \
+            --title "LINE MR $GITHUB_REF_NAME" --notes-file notes.md --verify-tag
