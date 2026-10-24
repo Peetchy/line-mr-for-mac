@@ -1,6 +1,7 @@
 # Builds LINE MR (the .dmg and the .pkg) and publishes them as a GitHub release.
 #
-# - Push a tag "vX.Y.Z" to build and release version X.Y.Z.
+# - Push a tag "vX.Y.Z" to build and release version X.Y.Z. Pushing the tag again (git tag -f,
+#   git push -f) rebuilds that release's files in place.
 # - Run it by hand (Actions > Release > Run workflow) to build without releasing; the files are kept
 #   as the run's artifact.
 #
@@ -21,7 +22,7 @@ jobs:
   build:
     runs-on: macos-14 # Apple silicon
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Qt 6.6.3
         uses: jurplel/install-qt-action@v4
@@ -60,7 +61,7 @@ jobs:
           cd build
           shasum -a 256 LINE-MR-*.dmg LINE-MR-*.pkg | tee SHA256SUMS.txt
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: LINE-MR-${{ steps.version.outputs.version }}
           path: |
@@ -87,8 +88,17 @@ jobs:
           ดูวิธีติดตั้งทีละขั้นได้ใน [README](https://github.com/$GITHUB_REPOSITORY#การติดตั้งสำหรับผู้ใช้--installation)
           Not signed with an Apple Developer ID: allow it once under System Settings > Privacy & Security > Open Anyway. Step-by-step instructions are in the README.
 
+          LINE MR ตรวจหาเวอร์ชันใหม่จากหน้า Releases นี้วันละครั้ง และแจ้งเตือนเมื่อมีเวอร์ชันใหม่
+          LINE MR checks this page for a newer release once a day and offers to download it.
+
           SHA-256: ดูไฟล์ SHA256SUMS.txt
           EOF
-          gh release create "$GITHUB_REF_NAME" \
-            "build/LINE-MR-$VERSION.dmg" "build/LINE-MR-$VERSION.pkg" build/SHA256SUMS.txt \
-            --title "LINE MR $GITHUB_REF_NAME" --notes-file notes.md --verify-tag
+          files=("build/LINE-MR-$VERSION.dmg" "build/LINE-MR-$VERSION.pkg" build/SHA256SUMS.txt)
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            # The tag was pushed again: replace the files of the existing release.
+            gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber
+            gh release edit "$GITHUB_REF_NAME" --title "LINE MR $GITHUB_REF_NAME" --notes-file notes.md
+          else
+            gh release create "$GITHUB_REF_NAME" "${files[@]}" \
+              --title "LINE MR $GITHUB_REF_NAME" --notes-file notes.md --verify-tag
+          fi

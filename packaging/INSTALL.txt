@@ -39,6 +39,11 @@ LINE MR ไม่ได้เซ็นด้วยบัญชี Apple Develope
 
 รายละเอียดเพิ่มเติม รวมถึงการปิด Gatekeeper ทั้งเครื่อง อยู่ใน README.md ของโครงการ
 
+ตรวจหาเวอร์ชันใหม่
+LINE MR ตรวจหาเวอร์ชันใหม่จาก GitHub วันละครั้ง หลังจากเปิด LINE แล้ว
+ถ้ามีเวอร์ชันใหม่จะถามว่า ดาวน์โหลด / ไว้ทีหลัง / ข้ามเวอร์ชันนี้
+กดดาวน์โหลดแล้วติดตั้งทับแบบเดียวกับครั้งแรก
+
 ถอนการติดตั้ง
 1. ลบ Applications > LINE MR
 2. ลบส่วนเสริมที่ติดตั้งไว้ โดยพิมพ์ใน Terminal:
@@ -73,6 +78,10 @@ LINE MR is not signed with an Apple Developer ID, so macOS blocks the first laun
 4. Enter your password (or use Touch ID) and click "Open Anyway" again.
 Do the same for "Install LINE MR.pkg" if the installer is blocked.
 Or, in Terminal, before opening:  xattr -dr com.apple.quarantine ~/Downloads/LINE-MR-*.dmg
+
+Updates
+LINE MR checks GitHub for a newer version once a day, after LINE is open, and offers
+Download / Later / Skip This Version. Install the new version over the old one.
 
 Uninstall
 1. Delete Applications > LINE MR.

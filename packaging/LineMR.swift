@@ -13,6 +13,8 @@ import AppKit
 let lineID = "jp.naver.line.mac"
 let callID = "jp.naver.line.mac.LineCall"
 let testedVersion = "26.5.0 (3975)"
+let repository = "Peetchy/line-mr-for-mac"
+let currentVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
 
 // MARK: - Text and log
 
@@ -117,6 +119,89 @@ func open(_ url: URL, pluginPath: URL, activate: Bool) -> NSRunningApplication? 
     return result
 }
 
+// MARK: - Updates
+
+/// "v0.1.1" -> [0, 1, 1]. A suffix ("0.1.1-abc1234", a build between releases) is ignored.
+func versionNumbers(_ version: String) -> [Int] {
+    let core = version.trimmingCharacters(in: CharacterSet(charactersIn: "vV ")).split(separator: "-").first ?? ""
+    return core.split(separator: ".").map { Int($0) ?? 0 }
+}
+
+func isNewer(_ version: String, than other: String) -> Bool {
+    let a = versionNumbers(version), b = versionNumbers(other)
+    for i in 0..<max(a.count, b.count) {
+        let x = i < a.count ? a[i] : 0, y = i < b.count ? b[i] : 0
+        if x != y { return x > y }
+    }
+    return false
+}
+
+struct Release {
+    let version: String // the tag, "v0.1.2"
+    let page: URL
+    let diskImage: URL?
+}
+
+/// The repository's latest published release (drafts and pre-releases are not "latest").
+func latestRelease(timeout: TimeInterval) -> Release? {
+    var request = URLRequest(url: URL(string: "https://api.github.com/repos/\(repository)/releases/latest")!,
+                             timeoutInterval: timeout)
+    request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+    request.setValue("LINE-MR/\(currentVersion)", forHTTPHeaderField: "User-Agent")
+    var body: Data?
+    var finished = false
+    URLSession.shared.dataTask(with: request) { data, response, error in
+        DispatchQueue.main.async {
+            if let error {
+                log("update check failed: \(error.localizedDescription)")
+            } else if let http = response as? HTTPURLResponse, http.statusCode != 200 {
+                log("update check failed: HTTP \(http.statusCode)")
+            } else {
+                body = data
+            }
+            finished = true
+        }
+    }.resume()
+    wait(timeout + 1) { finished }
+    guard let body, let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+          let tag = json["tag_name"] as? String,
+          let page = (json["html_url"] as? String).flatMap(URL.init(string:)) else { return nil }
+    let assets = json["assets"] as? [[String: Any]] ?? []
+    let diskImage = assets.compactMap { $0["browser_download_url"] as? String }.first { $0.hasSuffix(".dmg") }
+    return Release(version: tag, page: page, diskImage: diskImage.flatMap(URL.init(string:)))
+}
+
+/// At most once a day, once LINE is open: offer a newer LINE MR from the repository's releases.
+func checkForUpdate() {
+    let defaults = UserDefaults.standard
+    if let last = defaults.object(forKey: "lastUpdateCheck") as? Date, Date().timeIntervalSince(last) < 24 * 60 * 60 {
+        return
+    }
+    guard let release = latestRelease(timeout: 8) else { return }
+    defaults.set(Date(), forKey: "lastUpdateCheck")
+    log("latest release \(release.version), this is \(currentVersion)")
+    guard isNewer(release.version, than: currentVersion), defaults.string(forKey: "skippedVersion") != release.version else {
+        return
+    }
+    let version = release.version.trimmingCharacters(in: CharacterSet(charactersIn: "vV"))
+    let choice = alert(
+        tr("A new version of LINE MR is available", "มี LINE MR เวอร์ชันใหม่"),
+        tr("LINE MR \(version) is available (this Mac has \(currentVersion)). Download it, then install it the same way as before: open the disk image and run Install LINE MR.pkg.",
+           "LINE MR \(version) พร้อมให้ดาวน์โหลดแล้ว (เครื่องนี้เป็น \(currentVersion)) ดาวน์โหลดแล้วติดตั้งแบบเดียวกับครั้งก่อน คือเปิดไฟล์ DMG แล้วเปิด Install LINE MR.pkg"),
+        buttons: [tr("Download", "ดาวน์โหลด"), tr("Later", "ไว้ทีหลัง"), tr("Skip This Version", "ข้ามเวอร์ชันนี้")],
+        style: .informational)
+    switch choice {
+    case 0:
+        let url = release.diskImage ?? release.page
+        log("opening \(url.absoluteString)")
+        NSWorkspace.shared.open(url)
+    case 2:
+        defaults.set(release.version, forKey: "skippedVersion")
+    default:
+        break // asked again tomorrow
+    }
+}
+
 // MARK: - Steps
 
 func lineLocation() -> URL? {
@@ -184,7 +269,7 @@ func run() {
     let lineDir = cache.appendingPathComponent("\(lineID)/a11y")
     let callDir = cache.appendingPathComponent("\(callID)/a11y")
     let callURL = lineURL.appendingPathComponent("Contents/Frameworks/LineCall.app")
-    log("LINE MR \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"), LINE at \(lineURL.path)")
+    log("LINE MR \(currentVersion), LINE at \(lineURL.path)")
 
     checkVersion(lineURL)
     do {
@@ -199,6 +284,7 @@ func run() {
             // Already bridged: just bring LINE back (also when its window is closed to the menu bar).
             log("LINE \(line.processIdentifier) already has the bridge")
             _ = open(lineURL, pluginPath: lineDir, activate: true)
+            checkForUpdate()
             exit(0)
         }
         let choice = alert(
@@ -227,6 +313,7 @@ func run() {
     }
     log("the bridge is running in LINE")
     swapCallHelper(callURL, callDir)
+    checkForUpdate()
     exit(0)
 }
 

@@ -121,7 +121,13 @@ xattr -dr com.apple.quarantine "/Applications/LINE MR.app"
 
 ### อัปเดตและถอนการติดตั้ง
 
-- **อัปเดต LINE MR:** ติดตั้งเวอร์ชันใหม่ทับได้เลยทั้งสองแบบ จากนั้นปิด LINE แล้วเปิดผ่าน LINE MR ใหม่
+- **ตรวจหาเวอร์ชันใหม่อัตโนมัติ:** ทุกครั้งที่เปิด LINE MR (ไม่เกินวันละครั้ง) หลังจากเปิด LINE แล้ว LINE MR จะตรวจหน้า [Releases](https://github.com/Peetchy/line-mr-for-mac/releases) ถ้ามีเวอร์ชันใหม่กว่าจะมีกล่องข้อความ "มี LINE MR เวอร์ชันใหม่" ให้เลือก
+  - **ดาวน์โหลด**: เปิดเบราว์เซอร์และดาวน์โหลดไฟล์ DMG เวอร์ชันใหม่ลงโฟลเดอร์ Downloads
+  - **ไว้ทีหลัง**: ถามใหม่ในวันถัดไป
+  - **ข้ามเวอร์ชันนี้**: ไม่ถามถึงเวอร์ชันนี้อีก จะถามอีกครั้งเมื่อมีเวอร์ชันที่ใหม่กว่า
+  
+  ถ้าไม่มีอินเทอร์เน็ตหรือเชื่อมต่อ GitHub ไม่ได้ LINE MR จะข้ามการตรวจไปเฉย ๆ ไม่มีผลกับการเปิด LINE
+- **อัปเดต LINE MR:** ติดตั้งเวอร์ชันใหม่ทับได้เลยทั้งสองแบบ (ครั้งแรกของแต่ละเวอร์ชันอาจต้องกด Open Anyway ตามขั้นที่ 2 อีกครั้ง) จากนั้นปิด LINE แล้วเปิดผ่าน LINE MR ใหม่
 - **เมื่อ LINE อัปเดต:** LINE MR จะแจ้งเตือนถ้าเป็นเวอร์ชันที่ยังไม่ได้ทดสอบ ใช้ต่อได้ แต่บางส่วนอาจอ่านไม่ได้จนกว่าจะมี LINE MR เวอร์ชันใหม่
 - **ถอนการติดตั้ง:**
   1. ลบ `/Applications/LINE MR.app` (ย้ายไปถังขยะ)
@@ -202,7 +208,9 @@ The version is `VERSION` in the `Makefile`. Without LINE installed, build agains
 git tag v0.1.2 && git push origin v0.1.2
 ```
 
-Running the workflow by hand (Actions > Release > Run workflow) builds without releasing; the files are attached to the run. `LINE MR.app` opens LINE and LineCall through LaunchServices with `QT_PLUGIN_PATH` (as the launcher script does), so both keep their own microphone/camera permissions.
+Running the workflow by hand (Actions > Release > Run workflow) builds without releasing; the files are attached to the run. To rebuild an existing release's files (same version), move its tag: `git tag -f v0.1.1 && git push -f origin v0.1.1`.
+
+**Update check:** `LINE MR.app` asks `https://api.github.com/repos/Peetchy/line-mr-for-mac/releases/latest` (no login, at most once a day, 8 s timeout, after LINE is open) and compares its `tag_name` with the app's `CFBundleShortVersionString`. A newer release gets an alert: Download (opens the release's `.dmg`), Later, Skip This Version. Drafts and pre-releases are never offered. Settings: `defaults read io.github.peetchy.line-mr` (`lastUpdateCheck`, `skippedVersion`); delete `lastUpdateCheck` to check again now. `LINE MR.app` opens LINE and LineCall through LaunchServices with `QT_PLUGIN_PATH` (as the launcher script does), so both keep their own microphone/camera permissions.
 
 Logs: `$(getconf DARWIN_USER_CACHE_DIR)/jp.naver.line.mac/a11y/a11y.log`. The call window logs to `jp.naver.line.mac.LineCall/a11y/`.
 
