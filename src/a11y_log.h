@@ -14,3 +14,15 @@ void a11yLog(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 const char *a11yDirectory();
 
 } // namespace line_a11y
+
+#include <QtCore/QString>
+
+namespace line_a11y {
+// a11yDirectory() as a QString ending in '/', for files next to a11y.log (named as in the Windows
+// bridge, whose code uses it).
+inline QString bridgeDirectory()
+{
+    return QString::fromUtf8(a11yDirectory()) + u'/';
+}
+
+} // namespace line_a11y

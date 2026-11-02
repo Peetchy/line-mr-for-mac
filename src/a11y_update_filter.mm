@@ -1,6 +1,8 @@
 #include "a11y_update_filter.h"
 
 #include "a11y_log.h"
+#include "focus_highlight.h"
+#include "video_controls.h"
 
 #include <QtCore/QElapsedTimer>
 #include <QtCore/QHash>
@@ -105,6 +107,11 @@ void handleUpdate(QAccessibleEvent *event)
     QPlatformAccessibility *platform = platformAccessibility();
     if (!platform)
         return;
+    // The video player moves its position slider every second while playing.
+    if (isPlayerValueEvent(event)) {
+        stats().dropped[eventKey(event)]++;
+        return;
+    }
     if (event->type() == QAccessible::Focus && g_focusSuppressor && event->object()
         && g_focusSuppressor(event->object())) {
         stats().dropped[eventKey(event)]++;
@@ -117,6 +124,7 @@ void handleUpdate(QAccessibleEvent *event)
         return;
     }
     stats().forwarded[eventKey(event)]++;
+    noteAccessibleEvent(event);
     platform->notifyAccessibilityUpdate(event);
 }
 

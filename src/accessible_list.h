@@ -47,6 +47,9 @@ bool isCursorList(const QWidget *w);
 // Is a LcContextMenu showing?
 bool contextMenuVisible();
 
+// The posts of a group's / OpenChat's Notes (TimelineListView).
+bool isPostList(const QWidget *w);
+
 class ListRowTextCache : public QObject
 {
 public:
@@ -158,6 +161,10 @@ public:
     bool moveCursor(int key);
     // Clicks the row under the cursor if it is not LINE's current one; false if there is nothing to open.
     bool openCursorRow();
+    // The chat at `row` of the chat list is being opened: once LINE shows it beside the list, the
+    // keyboard goes to its message input (user request). Gives up after 5 s or when the user moves
+    // focus to another window or field meanwhile.
+    void focusInputWhenOpened(int row);
     // Puts the cursor on `row` (VoiceOver's own navigation landed there).
     void setCursorRow(int row);
     // Back to following LINE's current row (the open chat).
@@ -181,6 +188,40 @@ public:
     // The text of the `n`-th newest message with text (1 = newest), or "" if there is none.
     QString recentMessageText(int n);
 
+    // Grids and lists LINE gives no keyboard (a chat's Photos & videos, Links, Files; the sticker
+    // window's packages): the arrows, PageUp/PageDown and Home/End move the bridge's cursor by what is
+    // on screen (Left/Right one item, Up/Down the nearest item in the line above / below). Returns
+    // false for other keys.
+    bool moveGridCursor(int key);
+    // Clicks the item under the cursor (or the current one), as a mouse user would.
+    bool clickCursorRow();
+    // Space / Enter on a post in Notes: clicks its first photo or video (a video's play button), which
+    // LINE opens in its media viewer. False if the post shows none.
+    bool openPostMedia();
+    // The menu key on a post in Notes: the bridge's menu (Open, Save as..., Copy text, LINE's own
+    // "More options" menu). LINE has no context menu there.
+    bool openPostMenu();
+    // The menu key in a chat's Photos & videos / Links / Files window, where LINE has no menu: the
+    // bridge's own (Open; Save for photos, videos and files; Copy link and Copy text for links).
+    bool openContentMenu();
+    // Space / Enter in a chat's search results (ChatSearchResultWindow, the search bar's list button):
+    // double-clicks the row like a mouse user (LINE then moves the chat to that message; a single
+    // click does nothing) and puts the keyboard on that message in the chat. False in other lists.
+    bool openSearchResult();
+    // The sender's picture of the received message at `row`: in that row, or (LINE draws the picture
+    // and the name only on the first of several messages in a row from one person) in a row above it.
+    // Returns that row, or -1 (own messages, notices, dates, or not found). With `scroll`, rows are
+    // scrolled into view to be looked at; without, only rows already shown are. Sets `picture` to the
+    // picture's place in its row (viewport units, relative to the row).
+    int senderPictureRow(int row, bool scroll, QRectF *picture = nullptr) const;
+    // Clicks the sender's picture of the message at `row` like a mouse user: LINE opens that
+    // person's profile. False if the message has none.
+    bool openSenderProfile(int row);
+    // Hovers the message at `row` and presses the reaction button LINE then draws beside it (LINE
+    // opens its reaction picker). False if the row cannot be looked at.
+    // remove: take back the reaction the user gave (press the chosen face).
+    bool openReactions(int row, bool remove = false);
+
 private:
     void connectView();
     void connectModel();
@@ -195,6 +236,10 @@ private:
     bool openMessageContent(int row);
     // A new message from someone else at the end of the open chat: announce it.
     void announceNewRow();
+    // Bounded wait for rows loaded by an edge scroll (Up on the oldest message). Persistent indices
+    // follow prepends.
+    void continueEdgeStep(quint64 request, int key, QPersistentModelIndex anchor, int attempts);
+    quint64 m_edgeRequest = 0;
 
     mutable QHash<int, QAccessible::Id> m_items;
     mutable bool m_prunePending = false;
@@ -207,5 +252,24 @@ private:
     QPersistentModelIndex m_lastRead;
     qint64 m_modelLoadedAt = 0;
 };
+
+// The message menu the keyboard opened (openRowMenu) gets more items of the bridge's own: "React" /
+// "Remove reaction" for messages, "Show <sender>'s profile" for received messages in groups (user
+// requests). They are widgets inside LINE's menu, reached and pressed with the menu keys the bridge
+// already handles. Called once the menu is shown.
+void addProfileMenuItem(QWidget *menu);
+// Removes those items again (the menu is hidden; LINE may show the same menu widget again).
+void removeExtraMenuItems(QWidget *menu);
+bool isExtraMenuItem(const QWidget *w);
+// The item's interface (menu item with a press action), nullptr for other widgets.
+QAccessibleInterface *extraMenuItemAccessible(QWidget *w);
+// An item the bridge asked to press in the next menu LINE shows within a few seconds (a file's
+// "Save as..." after jumping to its message), matched by text; nullptr if none is pending or matches.
+QWidget *takePendingMenuChoice(const QList<QWidget *> &items);
+
+// The sticker window's package strip has no names; LINE draws them only in "My stickers" (its Edit
+// button). When names are missing or the number of packages changed, open "My stickers", read both
+// tabs, go back and put focus back (user request on Windows). Called when a StickerWindow shows.
+void refreshStickerPackageNames(QWidget *stickerWindow);
 
 } // namespace line_a11y

@@ -6,12 +6,12 @@ A VoiceOver accessibility bridge for **LINE for macOS** (`/Applications/LINE.app
 
 ## การติดตั้งสำหรับผู้ใช้ / Installation
 
-**เวอร์ชันล่าสุด: [v0.1.1](https://github.com/Peetchy/line-mr-for-mac/releases/tag/v0.1.1)**
+**เวอร์ชันล่าสุด: [v0.2.0](https://github.com/Peetchy/line-mr-for-mac/releases/tag/v0.2.0)**
 
 | ไฟล์ | ลิงก์ดาวน์โหลด |
 |---|---|
-| **DMG (แนะนำ)**: ตัวติดตั้ง ตัวโปรแกรม และวิธีติดตั้ง | [LINE-MR-0.1.1.dmg](https://github.com/Peetchy/line-mr-for-mac/releases/download/v0.1.1/LINE-MR-0.1.1.dmg) |
-| **PKG**: ตัวติดตั้งอย่างเดียว | [LINE-MR-0.1.1.pkg](https://github.com/Peetchy/line-mr-for-mac/releases/download/v0.1.1/LINE-MR-0.1.1.pkg) |
+| **DMG (แนะนำ)**: ตัวติดตั้ง ตัวโปรแกรม และวิธีติดตั้ง | [LINE-MR-0.2.0.dmg](https://github.com/Peetchy/line-mr-for-mac/releases/download/v0.2.0/LINE-MR-0.2.0.dmg) |
+| **PKG**: ตัวติดตั้งอย่างเดียว | [LINE-MR-0.2.0.pkg](https://github.com/Peetchy/line-mr-for-mac/releases/download/v0.2.0/LINE-MR-0.2.0.pkg) |
 | เวอร์ชันทั้งหมด | [Releases](https://github.com/Peetchy/line-mr-for-mac/releases) |
 
 > English summary: download the `.dmg` above, allow it in **System Settings > Privacy & Security > Open Anyway** (it is not signed with an Apple Developer ID), install with `Install LINE MR.pkg` or drag `LINE MR` to Applications, then always open LINE through **LINE MR**. Details in Thai below; an English copy is in the disk image's Read Me.
@@ -24,7 +24,7 @@ A VoiceOver accessibility bridge for **LINE for macOS** (`/Applications/LINE.app
 
 ### ขั้นที่ 1: ดาวน์โหลด
 
-1. กดลิงก์ [LINE-MR-0.1.1.dmg](https://github.com/Peetchy/line-mr-for-mac/releases/download/v0.1.1/LINE-MR-0.1.1.dmg) ในตารางด้านบน หรือเข้าหน้า [Releases](https://github.com/Peetchy/line-mr-for-mac/releases) แล้วเลือกไฟล์ `.dmg` ในหัวข้อ Assets ของเวอร์ชันล่าสุด
+1. กดลิงก์ [LINE-MR-0.2.0.dmg](https://github.com/Peetchy/line-mr-for-mac/releases/download/v0.2.0/LINE-MR-0.2.0.dmg) ในตารางด้านบน หรือเข้าหน้า [Releases](https://github.com/Peetchy/line-mr-for-mac/releases) แล้วเลือกไฟล์ `.dmg` ในหัวข้อ Assets ของเวอร์ชันล่าสุด
 2. ถ้า Safari ถามว่าจะอนุญาตให้ดาวน์โหลดจาก github.com ไหม ให้กด **Allow**
 3. ไฟล์จะอยู่ในโฟลเดอร์ **Downloads** (เปิดด้วย Option+Command+L ใน Finder)
 4. (ไม่บังคับ) ตรวจว่าไฟล์ไม่เสียหาย ด้วยคำสั่งใน Terminal แล้วเทียบกับไฟล์ `SHA256SUMS.txt` ในหน้า Release:
@@ -158,7 +158,8 @@ xattr -dr com.apple.quarantine "/Applications/LINE MR.app"
 - **Less noise:** drops background change notifications that the user did not cause and stops hover tooltips from triggering repeated announcements.
 - **Calls:** runs inside `LineCall.app` too, so the call window's buttons (end call, microphone, speaker, video) and text can be read.
 - **Keyboard (like the Windows version):** Tab reaches every button, checkbox and link in reading order while VoiceOver runs; Space or Return presses. The chat and friend lists can be browsed with the arrows without opening each chat. In a chat, Return or Space on a message opens "See more" (long messages, then read line by line), its link, a voice message, photo, video or file; VO+Shift+M opens the message's menu.
-- **Other windows:** Settings, profiles and member lists (Qt Quick pages), share and create-group pickers, and LINE's context menus are readable and usable from the keyboard.
+- **Other windows:** Settings, profiles and member lists (Qt Quick pages), share and create-chat / create-group pickers, a chat's Photos & videos / Links / Files, Notes, chat search results, the sticker window, the photo / video viewer (Play / Pause, seeking) and LINE's context menus are readable and usable from the keyboard.
+- **Reactions:** messages say which reactions they have; the message menu's "React" opens LINE's reaction picker.
 - **Languages:** labels the bridge adds follow LINE's language (English, Thai, Japanese, Simplified or Traditional Chinese).
 
 ## How it works
@@ -216,24 +217,47 @@ Logs: `$(getconf DARWIN_USER_CACHE_DIR)/jp.naver.line.mac/a11y/a11y.log`. The ca
 
 ## Keyboard commands / คำสั่งแป้นพิมพ์
 
+The NVDA add-on's Alt keys are Control keys on the Mac (Option+Command, the keys of LINE MR 0.1, still work). Control+Option is VoiceOver's own modifier and is not used.
+
+คำสั่ง Alt ของ NVDA บน Windows ใช้ Control แทนบน Mac (Option+Command ของ LINE MR 0.1 ยังใช้ได้)
+
 | Command | Action | การทำงาน |
 |---|---|---|
-| ⌥⌘1 / ⌥⌘2 / ⌥⌘3 | Friends / Chats / Add friends tab | แท็บเพื่อน / แชท / เพิ่มเพื่อน |
-| ⌥⌘C | Chat list (switches to the Chats tab first) | ไปที่รายการแชท (สลับไปแท็บแชทก่อนถ้าจำเป็น) |
-| ⌥⌘L | Chat list or friend list | ไปที่รายการแชทหรือรายชื่อเพื่อน |
-| ⌥⌘F | Search field of the list | ไปที่ช่องค้นหาของรายการ |
-| ⌥⌘M | Messages of the open chat (newest first) | ไปที่ข้อความของแชทที่เปิดอยู่ (เริ่มที่ข้อความล่าสุด) |
-| ⌥⌘I | Message input | ไปที่ช่องพิมพ์ข้อความ |
-| ⇧⌥⌘1 … 9 | Read a recent message (1 = newest) | อ่านข้อความล่าสุด (1 = ใหม่สุด) |
-| ⌥⌘A / ⌥⌘D | Answer / decline an incoming call (works from any app while it rings); ⌥⌘D in LINE ends a call | รับสาย / ปฏิเสธสาย (ใช้ได้จากทุกโปรแกรมขณะมีสายเรียกเข้า); ⌥⌘D ใน LINE วางสาย |
+| Control+1 / 2 / 3 | Friends / Chats / Add friends tab | แท็บเพื่อน / แชท / เพิ่มเพื่อน |
+| Control+C | Chat list (switches to the Chats tab first) | ไปที่รายการแชท (สลับไปแท็บแชทก่อนถ้าจำเป็น) |
+| Control+L | Chat list or friend list | ไปที่รายการแชทหรือรายชื่อเพื่อน |
+| Control+F | Search field of the list | ไปที่ช่องค้นหาของรายการ |
+| Control+M | Messages of the open chat (newest first) | ไปที่ข้อความของแชทที่เปิดอยู่ (เริ่มที่ข้อความล่าสุด) |
+| Control+I | Message input | ไปที่ช่องพิมพ์ข้อความ |
+| Control+Shift+1 … 9 | Read a recent message (1 = newest) | อ่านข้อความล่าสุด (1 = ใหม่สุด) |
+| Control+A / Control+D in LINE | Answer / decline an incoming call; during a call Control+D ends it. Without a call they do what they normally do in text fields (start of line / delete) | รับสาย / ปฏิเสธสาย; ระหว่างคุยกด Control+D วางสาย (ถ้าไม่มีสาย ปุ่มทำงานตามปกติในช่องพิมพ์) |
+| Control+Shift+A / Control+Shift+D from any app | Answer / decline while a LINE call rings | รับสาย / ปฏิเสธสายจากโปรแกรมอื่นขณะมีสายเรียกเข้า |
+| Command+S in the photo viewer | Save the photo or video | บันทึกรูปหรือวิดีโอในหน้าดูรูป |
 
-In lists: chat and friend list — arrows, Page Up/Down, Home/End move without opening a chat, Return opens it. Messages — Up/Down one message, Page Up/Down about a screen, Home or ⌘↑ the oldest loaded message (again: load older ones), End or ⌘↓ the newest; Return or Space opens "See more", a link, a voice message, photo, video or file; VO+Shift+M (or Shift+F10) opens the message's menu (arrows, Return, Escape). Tab back into a chat returns to the message read last.
+In lists: chat and friend list — arrows, Page Up/Down, Home/End move without opening a chat, Return (or VO+Space) opens it and, in the chat list, moves to its message input once it has opened. Messages — Up/Down one message (Up on the oldest loads older ones), Page Up/Down about a screen, Home or ⌘↑ the oldest loaded message, End or ⌘↓ the newest; Return or Space opens "See more", a link, a voice message, photo, video or file, or plays a sound sticker again. Tab back into a chat returns to the message read last.
 
-ในรายการ: รายการแชทและเพื่อน — ลูกศร Page Up/Down Home/End เลื่อนโดยไม่เปิดแชท, Return เปิดแชท. ข้อความ — ลูกศรขึ้นลงทีละข้อความ, Home หรือ ⌘↑ ไปข้อความเก่าสุดที่โหลดแล้ว, End หรือ ⌘↓ ไปข้อความล่าสุด, Return หรือ Space เปิด "ดูเพิ่มเติม" ลิงก์ ข้อความเสียง รูป วิดีโอ หรือไฟล์, VO+Shift+M (หรือ Shift+F10) เปิดเมนูของข้อความ
+Menus (VO+Shift+M, or Shift+F10 / the PC menu key): on a message, a chat or friend list row, a photo / link / file of a chat's Photos & videos, Links or Files window, and a post in Notes. Arrows move, Right opens a sub-menu and Left or Escape goes back, Return or Space chooses, Escape closes and returns to the row. The message menu adds "React" (LINE's reaction picker: Left/Right, Return gives the reaction, Escape closes; "Remove reaction" once you reacted) and, in groups, "Show <name>'s profile".
+
+Stickers: the package strip reads the package names; the first Return or Space on a sticker selects it and plays LINE's preview with its sound, the second sends it. Chat search (the magnifier in the chat header): Return searches, Up/Down go to older / newer matches, and the result is read ("Result 3 of 7" and the message).
+
+ในรายการ: รายการแชทและเพื่อน — ลูกศร Page Up/Down Home/End เลื่อนโดยไม่เปิดแชท, Return (หรือ VO+Space) เปิดแชท และในรายการแชทจะย้ายไปช่องพิมพ์ข้อความให้อัตโนมัติเมื่อแชทเปิดเสร็จ. ข้อความ — ลูกศรขึ้นลงทีละข้อความ (ขึ้นที่ข้อความเก่าสุดจะโหลดข้อความเก่ากว่า), Home หรือ ⌘↑ ไปข้อความเก่าสุดที่โหลดแล้ว, End หรือ ⌘↓ ไปข้อความล่าสุด, Return หรือ Space เปิด "ดูเพิ่มเติม" ลิงก์ ข้อความเสียง รูป วิดีโอ ไฟล์ หรือเล่นเสียงสติกเกอร์อีกครั้ง. เมนู (VO+Shift+M หรือ Shift+F10): ใช้ได้กับข้อความ แถวในรายการแชท/เพื่อน รูป/ลิงก์/ไฟล์ และโพสต์ในโน้ต; ลูกศรขวาเปิดเมนูย่อย ลูกศรซ้ายหรือ Escape ย้อนกลับ; เมนูข้อความมี "แสดงความรู้สึก" และในกลุ่มมี "แสดงโปรไฟล์ <ชื่อ>". สติกเกอร์: กดครั้งแรกเลือกและเล่นตัวอย่างพร้อมเสียง กดอีกครั้งเพื่อส่ง. ค้นหาในแชท: Return ค้นหา, ลูกศรขึ้นลงไปผลลัพธ์ก่อนหน้า/ถัดไป แล้วอ่านผลลัพธ์ให้ฟัง
+
+### Focus highlight / กรอบโฟกัส
+
+For low-vision users, a yellow frame with a black outline marks the control that has the keyboard focus (also chats, messages and menu items); it hides while another app is in front. Change it in `$(getconf DARWIN_USER_CACHE_DIR)/jp.naver.line.mac/a11y/focus-highlight.ini` (LINE applies the change within a second):
+
+```ini
+[highlight]
+enabled=true
+color=FFD600
+width=4
+```
+
+`enabled=false` turns it off; `color` is RGB in hex without `#`; `width` is 1-12 points.
 
 ## Tools
 
-- `build/ax_inspect [--pid PID] [--depth N] [--press TITLE [--nth N] [--prefix]]` prints LINE's live AX tree and can press elements.
+- `build/ax_inspect [--pid PID] [--depth N] [--press TITLE [--nth N] [--prefix] [--action AXShowMenu|AXFocus] [--set-value TEXT]] [--focused]` prints LINE's live AX tree, presses elements (or performs VO+Shift+M's AXShowMenu, focuses them, sets their value) and prints the focused element.
 - `touch "$(getconf DARWIN_USER_CACHE_DIR)/jp.naver.line.mac/a11y/dump-request"` makes the bridge write `widget-dump.txt` (widget tree, models, accessible tree).
 
 ## Layout
@@ -257,6 +281,6 @@ In lists: chat and friend list — arrows, Page Up/Down, Home/End move without o
 ## Status and limits
 
 - Verified only against LINE 26.5.0 (3975) on arm64.
-- The keyboard features ported from the Windows version (2026-10-23) are verified on the login window only; the main window, messages and calls still need testing with a logged-in LINE.
+- Ported from the Windows version 0.5.5 (2026-11-02) and checked in a logged-in LINE through the accessibility tree and synthesized keys: menus (VO+Shift+M on messages, chat rows, photos, Notes posts), the reaction picker, stickers, Photos & videos, Notes, chat search and the Control keys. Not yet heard with VoiceOver by a user; calls, the video player, sub-menus and the "Pinned" mark still need testing.
 - Stickers, videos, locations and contacts are only recognised once they have been seen on screen. Group sender names and the call window's labels need more testing.
 - This is an unofficial, independent project. It is not affiliated with or endorsed by LY Corporation / LINE.

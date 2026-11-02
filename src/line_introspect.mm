@@ -270,8 +270,16 @@ const LabelTranslations kLabels[] = {
     { "Background blur", "เบลอพื้นหลัง", "背景ぼかし", "背景模糊", "背景模糊" },
     { "Notes", "โน้ต", "ノート", "记事本", "記事本" },
     { "Show or hide chat list", "แสดงหรือซ่อนรายการแชท", "トークリストの表示/非表示", "显示或隐藏聊天列表", "顯示或隱藏聊天列表" },
+    { "Show or hide chat room, chat room shown", "แสดงหรือซ่อนห้องแชท, ห้องแชทแสดงอยู่", "トークルームの表示/非表示、表示中", "显示或隐藏聊天室，正在显示", "顯示或隱藏聊天室，顯示中" },
+    { "Show or hide chat room, chat room hidden", "แสดงหรือซ่อนห้องแชท, ห้องแชทซ่อนอยู่", "トークルームの表示/非表示、非表示中", "显示或隐藏聊天室，已隐藏", "顯示或隱藏聊天室，已隱藏" },
     { "Pause", "หยุดชั่วคราว", "一時停止", "暂停", "暫停" },
     { "Play", "เล่น", "再生", "播放", "播放" },
+    { "Position", "ตำแหน่ง", "再生位置", "播放位置", "播放位置" },
+    { "Playback speed", "ความเร็วในการเล่น", "再生速度", "播放速度", "播放速度" },
+    { "Your video", "วิดีโอของคุณ", "自分の映像", "你的视频画面", "你的影像" },
+    { "%1's camera is off", "กล้องของ %1 ปิดอยู่", "%1 のカメラはオフです", "%1 的摄像头已关闭", "%1 的鏡頭已關閉" },
+    { "Your microphone is off", "ไมโครโฟนของคุณปิดอยู่", "マイクはオフです", "你的麦克风已关闭", "你的麥克風已關閉" },
+    { "Your camera is off", "กล้องของคุณปิดอยู่", "カメラはオフです", "你的摄像头已关闭", "你的鏡頭已關閉" },
     { "Play sound", "เล่นเสียง", "音を再生", "播放声音", "播放聲音" },
     { "Test sound", "ทดสอบเสียง", "サウンドをテスト", "测试声音", "測試聲音" },
     { "Profile settings", "ตั้งค่าโปรไฟล์", "プロフィール設定", "个人资料设置", "個人檔案設定" },
@@ -291,17 +299,27 @@ const LabelTranslations kLabels[] = {
     { "Add", "เพิ่ม", "追加", "添加", "新增" },
     { "Delete", "ลบ", "削除", "删除", "刪除" },
     { "Remove", "นำออก", "取り除く", "移除", "移除" },
+    { "Remove %1", "นำ %1 ออก", "%1 を取り除く", "移除 %1", "移除 %1" },
+    { "Edit %1", "แก้ไข%1", "%1を編集", "编辑%1", "編輯%1" },
+    { "Change profile picture", "เปลี่ยนรูปโปรไฟล์", "プロフィール画像を変更", "更换头像", "更換大頭貼" },
+    { "Change background picture", "เปลี่ยนภาพพื้นหลัง", "背景画像を変更", "更换背景图片", "更換背景圖片" },
     { "Edit", "แก้ไข", "編集", "编辑", "編輯" },
     { "Copy", "คัดลอก", "コピー", "复制", "複製" },
     { "Share", "แชร์", "共有", "分享", "分享" },
     { "Download", "ดาวน์โหลด", "ダウンロード", "下载", "下載" },
     { "Upload", "อัปโหลด", "アップロード", "上传", "上傳" },
     { "Save", "บันทึก", "保存", "保存", "儲存" },
+    { "Open", "เปิด", "開く", "打开", "開啟" },
+    { "Copy link", "คัดลอกลิงก์", "リンクをコピー", "复制链接", "複製連結" },
+    { "Copy text", "คัดลอกข้อความ", "テキストをコピー", "复制文字", "複製文字" },
+    { "Save as...", "บันทึกเป็น...", "名前を付けて保存...", "另存为...", "另存新檔..." },
     { "Pin", "ปักหมุด", "ピン留め", "置顶", "釘選" },
     { "Unpin", "เลิกปักหมุด", "ピン留めを解除", "取消置顶", "取消釘選" },
     { "Mute notifications", "ปิดการแจ้งเตือน", "通知をオフ", "关闭通知", "關閉通知" },
     { "Unmute notifications", "เปิดการแจ้งเตือน", "通知をオン", "开启通知", "開啟通知" },
     { "Selected", "เลือกอยู่", "選択中", "已选择", "已選取" },
+    { "Result %1 of %2", "ผลลัพธ์ %1 จาก %2", "検索結果 %1 / %2", "第 %1 个结果，共 %2 个", "第 %1 個結果，共 %2 個" },
+    { "No results", "ไม่พบผลลัพธ์", "検索結果なし", "无结果", "沒有結果" },
     { "Information", "ข้อมูล", "情報", "信息", "資訊" },
     { "Help", "ความช่วยเหลือ", "ヘルプ", "帮助", "說明" },
     { "Profile", "โปรไฟล์", "プロフィール", "个人资料", "個人檔案" },
@@ -329,21 +347,76 @@ const LabelTranslations kLabels[] = {
     { "Message to %1", "พิมพ์ข้อความถึง %1", "%1 へのメッセージ", "发消息给 %1", "傳訊息給 %1" },
     { "Search chats", "ค้นหาแชท", "トークを検索", "搜索聊天", "搜尋聊天" },
     { "Search friends", "ค้นหาเพื่อน", "友だちを検索", "搜索好友", "搜尋好友" },
+    // Colour swatches (text profile editor: CustomProfileEditorWindow)
+    { "Color %1: %2", "สี %1: %2", "色 %1: %2", "颜色 %1: %2", "顏色 %1: %2" },
+    { "Light %1", "%1อ่อน", "明るい%1", "浅%1", "淺%1" },
+    { "Dark %1", "%1เข้ม", "暗い%1", "深%1", "深%1" },
+    { "White", "ขาว", "白", "白色", "白色" },
+    { "Light grey", "เทาอ่อน", "薄いグレー", "浅灰色", "淺灰色" },
+    { "Grey", "เทา", "グレー", "灰色", "灰色" },
+    { "Dark grey", "เทาเข้ม", "濃いグレー", "深灰色", "深灰色" },
+    { "Black", "ดำ", "黒", "黑色", "黑色" },
+    { "Red", "แดง", "赤", "红色", "紅色" },
+    { "Orange", "ส้ม", "オレンジ", "橙色", "橘色" },
+    { "Brown", "น้ำตาล", "茶色", "棕色", "棕色" },
+    { "Yellow", "เหลือง", "黄色", "黄色", "黃色" },
+    { "Green", "เขียว", "緑", "绿色", "綠色" },
+    { "Teal", "เขียวอมฟ้า", "ターコイズ", "青绿色", "青綠色" },
+    { "Blue", "ฟ้า", "青", "蓝色", "藍色" },
+    { "Navy", "น้ำเงิน", "紺", "藏青色", "藏青色" },
+    { "Purple", "ม่วง", "紫", "紫色", "紫色" },
+    { "Pink", "ชมพู", "ピンク", "粉色", "粉紅色" },
+    { "Text color", "สีตัวอักษร", "文字の色", "文字颜色", "文字顏色" },
+    { "Background color", "สีพื้นหลัง", "背景色", "背景颜色", "背景顏色" },
+    { "Font", "ฟอนต์", "フォント", "字体", "字型" },
+    { "Pinned", "ปักหมุด", "ピン留め", "已置顶", "已置頂" },
+    { "Clear text", "ล้างข้อความ", "テキストをクリア", "清除文本", "清除文字" },
+    { "Your nickname in this OpenChat", "ชื่อเล่นของคุณในโอเพนแชท", "このオープンチャットでのニックネーム", "你在此开放聊天中的昵称", "你在此社群中的暱稱" },
     { "Text field", "ช่องข้อความ", "テキスト入力欄", "文本框", "文字欄位" },
     { "Text area", "ช่องข้อความ", "テキスト入力欄", "文本框", "文字欄位" },
     { "Context menu", "เมนู", "メニュー", "菜单", "選單" },
     { "%1 options", "ตัวเลือก%1", "%1 のオプション", "%1 选项", "%1 選項" },
+    { "Show %1's profile", "แสดงโปรไฟล์ %1", "%1 のプロフィールを表示", "查看 %1 的个人资料", "查看 %1 的個人資料" },
+    { "React", "แสดงความรู้สึก", "リアクション", "回应", "回應" },
+    { "Remove reaction", "ยกเลิกการแสดงความรู้สึก", "リアクションを取り消す", "取消回应", "取消回應" },
+    { "Reaction: %1", "ความรู้สึก: %1", "リアクション: %1", "回应：%1", "回應：%1" },
+    { "Reactions: %1", "ความรู้สึก: %1", "リアクション: %1", "回应：%1", "回應：%1" },
+    { "%1 %2 people", "%1 %2 คน", "%1 %2人", "%1 %2 人", "%1 %2 人" },
+    { "%1, %2 people", "%1, รวม %2 คน", "%1、計%2人", "%1，共 %2 人", "%1，共 %2 人" },
+    { "Surprised", "ตกใจ", "びっくり", "惊讶", "驚訝" },
+    { "Funny", "ตลก", "ウケる", "好笑", "好笑" },
+    { "Like", "ถูกใจ", "いいね", "赞", "讚" },
+    { "Jealous", "อิจฉา", "うらやましい", "羡慕", "羨慕" },
+    { "Awesome", "สุดยอด", "すごい", "厉害", "厲害" },
+    { "Sad", "เศร้า", "悲しい", "难过", "難過" },
+    { "More reactions", "ความรู้สึกเพิ่มเติม", "その他のリアクション", "更多回应", "更多回應" },
+    { "Reactions", "แสดงความรู้สึก", "リアクション", "回应", "回應" },
+    { "%1, chosen", "%1, เลือกอยู่", "%1、選択中", "%1,已选", "%1,已選" },
+    { "has reactions", "มีคนแสดงความรู้สึก", "リアクションあり", "有回应", "有回應" },
+    { "Show the sender's profile", "แสดงโปรไฟล์ผู้ส่ง", "送信者のプロフィールを表示", "查看发送者的个人资料", "查看傳送者的個人資料" },
     { "%1 new", "ใหม่ %1", "新着 %1", "%1 条新消息", "%1 則新訊息" },
     { "Country code %1", "รหัสประเทศ %1", "国番号 %1", "国家代码 %1", "國碼 %1" },
     { "%1 members", "สมาชิก %1 คน", "メンバー %1 人", "%1 名成员", "%1 位成員" },
+    { "sent by %1 on %2", "ส่งโดย %1 เมื่อ %2", "%1 が送信、%2", "由 %1 发送于 %2", "由 %1 傳送於 %2" },
     { "%1 unread", "ยังไม่อ่าน %1", "未読 %1", "%1 条未读", "%1 則未讀" },
     { "Photo or sticker", "รูปภาพหรือสติกเกอร์", "写真またはスタンプ", "照片或贴图", "照片或貼圖" },
     { "Photos", "อัลบั้มรูปภาพ", "写真アルバム", "相册", "相簿" },
     { "Sticker", "สติกเกอร์", "スタンプ", "贴图", "貼圖" },
+    { "Sticker %1", "สติกเกอร์ %1", "スタンプ %1", "贴图 %1", "貼圖 %1" },
+    { "Emoji %1", "อิโมจิ %1", "絵文字 %1", "表情 %1", "表情貼 %1" },
+    { "%1, selected, press again to send", "%1, เลือกอยู่, กดอีกครั้งเพื่อส่ง", "%1、選択中、もう一度押すと送信",
+      "%1，已选择，再按一次即发送", "%1，已選取，再按一次即傳送" },
+    { "Recently used", "ใช้ล่าสุด", "最近使用", "最近使用", "最近使用" },
+    { "Package %1", "แพ็กเกจ %1", "パッケージ %1", "套装 %1", "套裝 %1" },
     { "LINE emoji", "อีโมจิ LINE", "LINE絵文字", "LINE 表情", "LINE 表情貼" },
     { "File", "ไฟล์", "ファイル", "文件", "檔案" },
     { "Call message", "การโทร", "通話", "通话", "通話" },
     { "Photo", "รูปภาพ", "写真", "照片", "照片" },
+    { "%1 photos", "รูปภาพ %1 รูป", "写真 %1 枚", "%1 张照片", "%1 張照片" },
+    { "%1 videos", "วิดีโอ %1 รายการ", "動画 %1 本", "%1 个视频", "%1 部影片" },
+    { "%1 reactions", "แสดงความรู้สึก %1 คน", "リアクション %1 件", "%1 个回应", "%1 個回應" },
+    { "%1 comments", "ความคิดเห็น %1 รายการ", "コメント %1 件", "%1 条评论", "%1 則留言" },
+    { "Profile picture", "รูปโปรไฟล์", "プロフィール画像", "头像", "大頭貼" },
     { "You", "คุณ", "あなた", "你", "你" },
     { "Messages", "ข้อความ", "メッセージ", "消息", "訊息" },
     { "Message", "ข้อความ", "メッセージ", "消息", "訊息" },
@@ -353,13 +426,20 @@ const LabelTranslations kLabels[] = {
     { "More", "เพิ่มเติม", "その他", "更多", "更多" },
     { "Notifications off", "ปิดการแจ้งเตือนอยู่", "通知オフ", "通知已关闭", "通知已關閉" },
     { "Scroll to latest message", "เลื่อนไปข้อความล่าสุด", "最新のメッセージへ移動", "滚动到最新消息", "捲動到最新訊息" },
+    { "Hide thumbnails", "ซ่อนภาพย่อ", "サムネイルを隠す", "隐藏缩略图", "隱藏縮圖" },
+    { "Show thumbnails", "แสดงภาพย่อ", "サムネイルを表示", "显示缩略图", "顯示縮圖" },
     { "Create chat", "สร้างแชท", "トークを作成", "创建聊天", "建立聊天" },
     { "Edit chat folders", "แก้ไขโฟลเดอร์แชท", "トークフォルダーを編集", "编辑聊天文件夹", "編輯聊天資料夾" },
     { "Accept", "ยอมรับ", "承認", "接受", "接受" },
     { "Sort", "เรียงลำดับ", "並べ替え", "排序", "排序" },
     { "Open in new window", "เปิดในหน้าต่างใหม่", "新しいウィンドウで開く", "在新窗口中打开", "在新視窗中開啟" },
     { "Close panel", "ปิดแผง", "パネルを閉じる", "关闭面板", "關閉面板" },
-    { "Search in chat list", "ค้นหาในรายการแชท", "トークリスト内を検索", "在聊天列表中搜索", "在聊天列表中搜尋" },
+    { "Search results", "ผลการค้นหา", "検索結果", "搜索结果", "搜尋結果" },
+    { "Show results as a list", "แสดงผลการค้นหาเป็นรายการ", "検索結果を一覧表示", "以列表显示搜索结果", "以清單顯示搜尋結果" },
+    { "Previous result", "ผลการค้นหาก่อนหน้า", "前の検索結果", "上一个搜索结果", "上一個搜尋結果" },
+    { "Next result", "ผลการค้นหาถัดไป", "次の検索結果", "下一个搜索结果", "下一個搜尋結果" },
+    { "Go to date", "ไปยังวันที่", "日付へ移動", "转到日期", "前往日期" },
+    { "Close search", "ปิดการค้นหา", "検索を閉じる", "关闭搜索", "關閉搜尋" },
     { "AI search", "ค้นหาด้วย AI", "AI検索", "AI 搜索", "AI 搜尋" },
     { "Cancel reply", "ยกเลิกการตอบกลับ", "リプライをキャンセル", "取消回复", "取消回覆" },
     { "Close ad", "ปิดโฆษณา", "広告を閉じる", "关闭广告", "關閉廣告" },
@@ -381,9 +461,11 @@ const LabelTranslations kLabels[] = {
     { "No message %1", "ไม่มีข้อความที่ %1", "メッセージ %1 はありません", "没有第 %1 条消息", "沒有第 %1 則訊息" },
     { "Not available here", "ใช้ที่นี่ไม่ได้", "ここでは使用できません", "此处不可用", "此處無法使用" },
     { "No incoming call", "ไม่มีสายเรียกเข้า", "着信はありません", "没有来电", "沒有來電" },
-    { "Option+Command+A answers, Option+Command+D declines.", "Option+Command+A รับสาย, Option+Command+D ปฏิเสธสาย",
-      "Option+Command+A で応答、Option+Command+D で拒否", "Option+Command+A 接听，Option+Command+D 拒绝",
-      "Option+Command+A 接聽，Option+Command+D 拒絕" },
+    { "Control+A answers, Control+D declines. From another application: Control+Shift+A or Control+Shift+D.",
+      "Control+A รับสาย, Control+D ปฏิเสธสาย จากแอปอื่น: Control+Shift+A หรือ Control+Shift+D",
+      "Control+A で応答、Control+D で拒否。他のアプリからは Control+Shift+A または Control+Shift+D",
+      "Control+A 接听，Control+D 拒绝。在其他应用中：Control+Shift+A 或 Control+Shift+D",
+      "Control+A 接聽，Control+D 拒絕。在其他應用程式中：Control+Shift+A 或 Control+Shift+D" },
 };
 
 QHash<QString, QString> labelsFor(UiLanguage language)
@@ -472,6 +554,12 @@ const QHash<QString, const char *> &iconLabels()
         { QStringLiteral("today-btn"), "LINE TODAY" },
         { QStringLiteral("system-full"), "Maximize" },
         { QStringLiteral("down-arrow"), "Scroll to latest message" },
+        // The round down arrow over a chat scrolled up (floating_dark.png); it was read "Floating".
+        { QStringLiteral("floating-dark"), "Scroll to latest message" },
+        // The media viewer's arrow under the picture folds / unfolds the thumbnail strip.
+        { QStringLiteral("list-down-arrow-bt"), "Hide thumbnails" },
+        { QStringLiteral("list-up-arrow-bt"), "Show thumbnails" },
+        { QStringLiteral("floating"), "Scroll to latest message" },
         { QStringLiteral("add-chat-floating"), "Create chat" },
         { QStringLiteral("search-cancel"), "Clear search" },
         { QStringLiteral("search-keyword-delete"), "Clear search" },
@@ -482,7 +570,10 @@ const QHash<QString, const char *> &iconLabels()
         { QStringLiteral("sorting"), "Sort" },
         { QStringLiteral("new-window"), "Open in new window" },
         { QStringLiteral("panel-close"), "Close panel" },
-        { QStringLiteral("chat-search-list"), "Search in chat list" },
+        // In-chat search bar: the results in a window of their own, the calendar (MessageCalendarWindow).
+        { QStringLiteral("chat-search-list"), "Show results as a list" },
+        { QStringLiteral("chat-calendar"), "Go to date" },
+        { QStringLiteral("search-close"), "Close search" },
         { QStringLiteral("ai-search"), "AI search" },
         { QStringLiteral("reply-layer-close"), "Cancel reply" },
         { QStringLiteral("banner-close"), "Close ad" },
@@ -549,6 +640,23 @@ const QHash<QString, const char *> &iconLabels()
         { QStringLiteral("more"), "More options" },
         { QStringLiteral("more-icon"), "More options" },
         // Chat room header
+        // LINE's reaction picker (ReactionDockWidget)
+        // Named as LINE's phone app names them (user report: the heart eyes are "Like", the thumbs
+        // up "Awesome"); the keys follow the resource names (ic-reaction-love.png, ...).
+        { QStringLiteral("reaction-love"), "Like" },
+        { QStringLiteral("reaction-fun"), "Funny" },
+        { QStringLiteral("reaction-like"), "Awesome" },
+        { QStringLiteral("reaction-envy"), "Jealous" },
+        { QStringLiteral("reaction-surprise"), "Surprised" },
+        { QStringLiteral("reaction-sad"), "Sad" },
+        // The same faces drawn under a message
+        { QStringLiteral("badge-love"), "Like" },
+        { QStringLiteral("badge-fun"), "Funny" },
+        { QStringLiteral("badge-like"), "Awesome" },
+        { QStringLiteral("badge-envy"), "Jealous" },
+        { QStringLiteral("badge-surprise"), "Surprised" },
+        { QStringLiteral("badge-sad"), "Sad" },
+        { QStringLiteral("reaction-more"), "More reactions" },
         { QStringLiteral("chatroom-call"), "Call" },
         { QStringLiteral("chatroom-video-call"), "Video call" },
         { QStringLiteral("chatroom-search"), "Search" },
@@ -642,6 +750,15 @@ const QHash<QString, const char *> &iconLabels()
         { QStringLiteral("gallery"), "Send image" },
         { QStringLiteral("screenshot"), "Take screenshot" },
         { QStringLiteral("capture"), "Take screenshot" },
+        { QStringLiteral("bg-camera-bt"), "Change background picture" },
+        // Create OpenChat: the camera on the profile picture, the clear button in the name fields.
+        { QStringLiteral("profile-camera-bt"), "Change profile picture" },
+        { QStringLiteral("text-del-bt"), "Clear text" },
+        // Text profile editor: which colours the swatches set (the chosen one is "-select").
+        { QStringLiteral("font-color-default"), "Text color" },
+        { QStringLiteral("font-color-select"), "Text color" },
+        { QStringLiteral("bgcolor-default"), "Background color" },
+        { QStringLiteral("bgcolor-select"), "Background color" },
         { QStringLiteral("camera"), "Camera" },
         { QStringLiteral("video"), "Video" },
         { QStringLiteral("mic"), "Voice message" },
@@ -935,6 +1052,16 @@ QString lcImageSource(const QWidget *image)
     return isPlausibleText(source) && source.startsWith(QLatin1StringView("image://")) ? source : QString();
 }
 
+QString iconSource(const QWidget *w)
+{
+    for (const char *prop : { "iconSource", "source", "defaultSource" }) {
+        const QVariant v = readProperty(w, prop);
+        if (v.metaType().id() == QMetaType::QString && !v.toString().isEmpty())
+            return v.toString();
+    }
+    return lcImageSource(w);
+}
+
 bool lcListDelegateDataPointerAvailable()
 {
     return offsetsAvailable();
@@ -961,6 +1088,23 @@ QString extractLcWidgetToolTip(QWidget *w)
         return QString();
     const QString raw = safeReadQString(reinterpret_cast<const char *>(w) + kLcWidgetToolTipOffset);
     return isPlausibleText(raw) ? cleanText(raw) : QString();
+}
+
+int chatSearchArrow(const QWidget *w)
+{
+    if (!inheritsClass(w, "LcButton") || !iconSource(w).endsWith(QLatin1StringView("/down-arrow.svg")) || !w->parentWidget())
+        return 0;
+    // The search bar's arrows sit beside the result counter ("41/42") and the clear button; the other
+    // down arrows (scroll to the newest message) do not.
+    bool searchBar = false;
+    for (QObject *sibling : w->parentWidget()->children()) {
+        if (sibling != w && inheritsClass(sibling, "LcButton")
+            && iconSource(static_cast<QWidget *>(sibling)).contains(QLatin1StringView("search-keyword-delete")))
+            searchBar = true;
+    }
+    if (!searchBar)
+        return 0;
+    return qRound(readProperty(w, "rotationAngle").toDouble()) % 360 == 180 ? -1 : 1;
 }
 
 QString humanizeIconName(const QString &iconName)

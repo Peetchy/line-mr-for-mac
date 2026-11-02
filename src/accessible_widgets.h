@@ -45,6 +45,27 @@ bool isLineInputWidget(const QWidget *w);
 // The message input of a chat (ChatDetailInputTextEdit, or AutoSuggestTextArea in group chats):
 // a multi-line LINE text field inside the chat panel.
 bool isMessageInput(const QWidget *w);
+// Name of the open chat in `w`'s window (the first text in the chat header), or "".
+QString chatNameFor(const QWidget *w);
+// "Sticker 3" for a sticker (or emoji) in the sticker window's grid, else empty.
+QString stickerName(const QWidget *w);
+// Does the chat `w` belongs to show a member count (group, OpenChat), unlike a one-to-one chat?
+bool chatHasMemberCount(const QWidget *w);
+// The chat shown in `w`'s window (its header): the name as drawn (LINE elides long ones with "...")
+// and the member count of a group (-1 for a one-to-one chat). False if no chat is shown.
+bool openChatHeader(const QWidget *w, QString *name, int *members);
+// The chat header's name and member count ("(500)") both open the member list: the name reads
+// "<name>, 500 members" (chatNameWithMemberCount, "" if `w` is not the header's name) and the count
+// is left out (no Tab stop, invisible to UIA).
+// A left click in the middle of `w` the way the mouse makes one: enter, move, press, release.
+void sendMouseClick(QWidget *w);
+// Presses an LcButton / LcCheckBox as LineAccessibleButton does, focus left alone. False if `w` is
+// not such a button.
+bool pressButtonQuietly(QWidget *w);
+bool isChatHeaderMemberCount(const QWidget *w);
+QString chatNameWithMemberCount(const QWidget *w, const QString &name);
+// "sent by <sender> on <date>" from the photo / video viewer's header, or just the date, or "".
+QString viewerSenderInfo(QWidget *viewer);
 
 // Name of the chat shown in the ChatMessagePanel of `w`'s window (first LcText of its header).
 QString chatNameFor(const QWidget *w);
@@ -99,6 +120,8 @@ public:
     QAccessible::State state() const override;
     QStringList actionNames() const override;
     void doAction(const QString &actionName) override;
+    // press() without what a user's press also does (focus follows a panel it shows).
+    void pressQuietly() { press(); }
 
 protected:
     QString computeName() const override;
@@ -166,6 +189,12 @@ public:
     int offsetAtPoint(const QPoint &point) const override;
     void scrollToSubstring(int startIndex, int endIndex) override;
     QString attributes(int offset, int *startOffset, int *endOffset) const override;
+    // Lines of a text area are the lines it shows (a wrapped paragraph is several, an empty line is
+    // one): Qt's default splits only at line breaks, so VoiceOver read a whole paragraph at every
+    // line, and the line above for an empty one.
+    QString textAtOffset(int offset, QAccessible::TextBoundaryType type, int *startOffset, int *endOffset) const override;
+    QString textBeforeOffset(int offset, QAccessible::TextBoundaryType type, int *startOffset, int *endOffset) const override;
+    QString textAfterOffset(int offset, QAccessible::TextBoundaryType type, int *startOffset, int *endOffset) const override;
 
     // QAccessibleEditableTextInterface
     void deleteText(int startOffset, int endOffset) override;
@@ -184,6 +213,10 @@ private:
     bool isMasked() const;
     QString plainText() const;   // unmasked
     QString exposedText() const; // masked for password fields
+    // Where the text area's shown lines start (document positions), first line first; empty for
+    // single-line fields.
+    QList<int> visualLineStarts() const;
+    QString visualLine(int line, int *startOffset, int *endOffset) const;
 };
 
 class LineAccessibleDelegate : public LineAccessibleWidget
@@ -205,6 +238,8 @@ class LineAccessibleWindow : public QAccessibleWidget
 public:
     explicit LineAccessibleWindow(QWidget *w);
     QString text(QAccessible::Text t) const override;
+    // While a menu is shown over the window with the keyboard in it, its focused item.
+    QAccessibleInterface *focusChild() const override;
 };
 
 // Qt's scroll-area interface exposes only the viewport and scroll bars; LINE puts headers next to
@@ -213,6 +248,23 @@ class LineAccessibleScrollArea : public QAccessibleWidget
 {
 public:
     explicit LineAccessibleScrollArea(QWidget *w);
+};
+
+// A QQuickWidget in the photo / video viewer (MediaViewerWindow; the video player's
+// VideoRenderPanelWidget). On Windows, Qt 6.6's own interface for the Qt Quick scene inside let UI
+// Automation run from its items into other windows; here too it is presented by the bridge, named
+// after what the viewer shows (Photo / Video, who sent it and when); a video holds the player's
+// Play / Pause button, Position and Playback speed (video_controls.h), nothing else.
+class LineAccessibleQuickWidget : public QAccessibleWidget
+{
+public:
+    explicit LineAccessibleQuickWidget(QWidget *w);
+    int childCount() const override;
+    QAccessibleInterface *child(int index) const override;
+    int indexOfChild(const QAccessibleInterface *child) const override;
+    QAccessibleInterface *childAt(int x, int y) const override;
+    QAccessibleInterface *focusChild() const override;
+    QString text(QAccessible::Text t) const override;
 };
 
 class LineAccessibleMenu : public LineAccessibleWidget

@@ -19,8 +19,12 @@ constexpr OSType kHotKeySignature = 'LnMR';
 enum HotKey : UInt32 { Answer = 1, Decline = 2 };
 
 EventHandlerRef g_handler = nullptr;
+// Control+Shift+A / D (the Windows add-on's NVDA+Shift+Control+A / D) and Option+Command+A / D (LINE
+// MR 0.1's keys).
 EventHotKeyRef g_answerKey = nullptr;
 EventHotKeyRef g_declineKey = nullptr;
+EventHotKeyRef g_answerKeyOld = nullptr;
+EventHotKeyRef g_declineKeyOld = nullptr;
 
 OSStatus hotKeyPressed(EventHandlerCallRef, EventRef event, void *)
 {
@@ -47,22 +51,26 @@ void registerHotKeys()
         const EventTypeSpec spec { kEventClassKeyboard, kEventHotKeyPressed };
         InstallApplicationEventHandler(&hotKeyPressed, 1, &spec, nullptr, &g_handler);
     }
-    const OSStatus a = RegisterEventHotKey(kVK_ANSI_A, cmdKey | optionKey, EventHotKeyID { kHotKeySignature, Answer },
+    const OSStatus a = RegisterEventHotKey(kVK_ANSI_A, controlKey | shiftKey, EventHotKeyID { kHotKeySignature, Answer },
                                            GetApplicationEventTarget(), 0, &g_answerKey);
-    const OSStatus d = RegisterEventHotKey(kVK_ANSI_D, cmdKey | optionKey, EventHotKeyID { kHotKeySignature, Decline },
+    const OSStatus d = RegisterEventHotKey(kVK_ANSI_D, controlKey | shiftKey, EventHotKeyID { kHotKeySignature, Decline },
                                            GetApplicationEventTarget(), 0, &g_declineKey);
-    a11yLog("[call] hot keys Option+Command+A / D registered (%d, %d)", int(a), int(d));
+    RegisterEventHotKey(kVK_ANSI_A, cmdKey | optionKey, EventHotKeyID { kHotKeySignature, Answer },
+                        GetApplicationEventTarget(), 0, &g_answerKeyOld);
+    RegisterEventHotKey(kVK_ANSI_D, cmdKey | optionKey, EventHotKeyID { kHotKeySignature, Decline },
+                        GetApplicationEventTarget(), 0, &g_declineKeyOld);
+    a11yLog("[call] hot keys Control+Shift+A / D registered (%d, %d)", int(a), int(d));
 }
 
 void unregisterHotKeys()
 {
-    if (g_answerKey)
-        UnregisterEventHotKey(g_answerKey);
-    if (g_declineKey)
-        UnregisterEventHotKey(g_declineKey);
+    for (EventHotKeyRef key : { g_answerKey, g_declineKey, g_answerKeyOld, g_declineKeyOld }) {
+        if (key)
+            UnregisterEventHotKey(key);
+    }
     if (g_answerKey || g_declineKey)
-        a11yLog("[call] hot keys Option+Command+A / D released");
-    g_answerKey = g_declineKey = nullptr;
+        a11yLog("[call] hot keys Control+Shift+A / D released");
+    g_answerKey = g_declineKey = g_answerKeyOld = g_declineKeyOld = nullptr;
 }
 
 // A widget tagged lineMR_<tag> (the call window's End call button), pressed through its interface.
@@ -101,7 +109,8 @@ void incomingCallChanged(QObject *)
 
 QString callKeysHint()
 {
-    return label("Option+Command+A answers, Option+Command+D declines.");
+    // In LINE (the notification is shown without taking the keyboard) and from other applications.
+    return label("Control+A answers, Control+D declines. From another application: Control+Shift+A or Control+Shift+D.");
 }
 
 bool answerCall()

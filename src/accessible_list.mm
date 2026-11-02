@@ -15,6 +15,7 @@
 #include <QtCore/QDateTime>
 #include <QtCore/QElapsedTimer>
 #include <QtCore/QItemSelectionModel>
+#include <QtCore/QFile>
 #include <QtCore/QMetaMethod>
 #include <QtCore/QMetaProperty>
 #include <QtCore/QRegularExpression>
@@ -32,6 +33,9 @@
 #include <QtWidgets/QAbstractItemView>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QScrollBar>
+#include <QtWidgets/QMenu>
+#include <QtGui/QWheelEvent>
+#include <QtGui/QClipboard>
 #include <QtWidgets/QStyleOptionViewItem>
 
 #include <algorithm>
@@ -109,6 +113,20 @@ QString dataObjectText(const QObject *data)
     QList<Part> parts;
     const QMetaObject *mo = data->metaObject();
     const int first = QObject::staticMetaObject.propertyCount();
+    // Each data class's properties once (names and types; values only for bool / int).
+    static QSet<QByteArray> described;
+    if (!described.contains(mo->className())) {
+        described.insert(mo->className());
+        QStringList props;
+        for (int i = first; i < mo->propertyCount(); ++i) {
+            const QMetaProperty prop = mo->property(i);
+            QString entry = QString::fromLatin1(prop.name()) + u':' + QString::fromLatin1(prop.typeName());
+            if (prop.metaType().id() == QMetaType::Bool || prop.metaType().id() == QMetaType::Int)
+                entry += u'=' + prop.read(data).toString();
+            props << entry;
+        }
+        a11yLog("[list] %s properties: %s", mo->className(), qPrintable(props.join(u' ')));
+    }
     for (int i = first; i < mo->propertyCount(); ++i) {
         const QMetaProperty prop = mo->property(i);
         const QByteArray name = prop.name();
@@ -227,11 +245,12 @@ QString messageKindLabel(const QString &delegateClass)
     return QString();
 }
 
-// Time ("2:49 PM", "14:49", "14:49 น.") and read receipt ("Read", "Read 3", "อ่านแล้ว") labels.
+// Time ("2:49 PM", "14:49", "14:49 น.", "下午 2:49") and read receipt ("Read", "Read 3", "อ่านแล้ว",
+// "已讀") labels.
 bool isTimeOrReceipt(const QString &text)
 {
-    static const QRegularExpression pattern(
-        QStringLiteral("^(\\d{1,2}[:.]\\d{2}(\\s?([AaPp][Mm]|น\\.?))?|Read( \\d+)?|อ่านแล้ว( \\d+)?)$"));
+    static const QRegularExpression pattern(QStringLiteral(
+        "^(([上下]午\\s?)?\\d{1,2}[:.]\\d{2}(\\s?([AaPp][Mm]|น\\.?))?|Read( \\d+)?|อ่านแล้ว( \\d+)?|已讀(\\s?\\d+)?)$"));
     return pattern.match(text.trimmed()).hasMatch();
 }
 
@@ -315,6 +334,7 @@ QString listContextName(const QWidget *view)
         { "MainFriendPanel", "Friends" },
         { "MainAddFriendPanel", "Add friends" },
         { "MainCallPanel", "Calls" },
+        { "ChatSearchResultWindow", "Search results" },
     };
     for (const Context &c : contexts) {
         if (ancestorInheriting(view, c.ancestor))
@@ -331,6 +351,11 @@ QObject *rowData(QAbstractItemView *view, int row)
     return model->index(row, 0, view->rootIndex()).data(kItemDataRole).value<QObject *>();
 }
 
+QString messageReactions(QAbstractItemView *view, int row, const QString &messageId);
+QString withChatStatus(QAbstractItemView *view, int row, const QString &text, QObject *data);
+QString packageRowText(QAbstractItemView *view, int row, QObject *data);
+QString paintedListRowText(QAbstractItemView *view, int row);
+
 // The spoken text of `row` (see the file comment for where it comes from).
 QString rowText(QAbstractItemView *view, int row)
 {
@@ -345,11 +370,24 @@ QString rowText(QAbstractItemView *view, int row)
         const ChatMessageFields fields = readChatMessageData(data);
         if (!cache)
             return chatMessageText(fields, false, QString(), [] { return QStringList(); });
-        return chatMessageText(fields, cache->isOwnMessage(fields), cache->delegateClassFor(row),
-                               [cache, row] { return cache->visibleTexts(row); });
-    }
-    if (QString text = dataObjectText(data); !text.isEmpty())
+        QString text = chatMessageText(fields, cache->isOwnMessage(fields), cache->delegateClassFor(row),
+                                       [cache, row] { return cache->visibleTexts(row); });
+        // Reactions are drawn under the message only (ChatMessageData has none).
+        if (const QString reactions = messageReactions(view, row, fields.id); !reactions.isEmpty() && !text.isEmpty())
+            text += QStringLiteral(", ") + reactions;
         return text;
+    }
+    // Rows LINE gives no text for (Notes posts, the photo grid, search results, sticker packages): what
+    // it draws.
+    if (QString painted = paintedListRowText(view, row); !painted.isEmpty())
+        return painted;
+    if (QString text = packageRowText(view, row, data); !text.isEmpty())
+        return text;
+    if (QString text = dataObjectText(data); !text.isEmpty()) {
+        if (inheritsClass(data, "ChatData") && ancestorInheriting(view, "MainChatPanel"))
+            return withChatStatus(view, row, text, data);
+        return text;
+    }
     if (ListRowTextCache *cache = ListRowTextCache::forView(view)) {
         if (QString text = cache->text(row); !text.isEmpty())
             return text;
@@ -488,6 +526,727 @@ QPointF viewportPoint(QAbstractItemView *view, const QRect &rowRect, const QPoin
                    qBound(shown.top(), rowRect.top() + point.y() / kWindowsScale, shown.bottom()));
 }
 
+// The row `r` of `view` recorded as it is painted, in "Windows" coordinates relative to the row
+// (see kWindowsScale); fromWindows() converts back to viewport units relative to the row.
+CaptureResult captureRowRect(QAbstractItemView *view, const QRect &r)
+{
+    return scaledCapture(captureRegionText(view->viewport(), r), kWindowsScale);
+}
+
+QRectF fromWindows(const QRectF &r)
+{
+    return QRectF(r.topLeft() / kWindowsScale, r.size() / kWindowsScale);
+}
+
+QPointF fromWindows(const QPointF &p)
+{
+    return p / kWindowsScale;
+}
+
+// ---- Reactions -----------------------------------------------------------------------------------
+
+// Reactions given to a message: small round faces LINE draws just under its bubble or picture
+// ("Windows" coordinates).
+bool isReactionBadge(const CaptureResult &cap, const QRectF &icon)
+{
+    if (icon.width() > 26 || icon.height() > 26)
+        return false;
+    for (const PaintedImage &above : cap.images) {
+        const QRectF &b = above.rect;
+        if (b != icon && b.width() >= 40 && b.height() >= 30 && icon.top() >= b.bottom() - 6
+            && icon.top() <= b.bottom() + 20 && icon.right() >= b.left() && icon.left() <= b.right())
+            return true;
+    }
+    return false;
+}
+
+// The reactions under a message: "Reactions: Like, Funny, 3 people" (LINE draws up to 7 faces, one
+// per kind given, left to right, and the number of people; no number per kind), "Like 2 people"
+// with one kind, "has reactions" when the faces are not recognised. "" without reactions.
+QString reactionSummary(const CaptureResult &cap)
+{
+    QList<const PaintedImage *> badges;
+    QRectF faces;
+    for (const PaintedImage &pi : cap.images) {
+        if (pi.icon.startsWith(QLatin1StringView("badge-")) && isReactionBadge(cap, pi.rect)) {
+            badges << &pi;
+            faces = faces.united(pi.rect);
+        }
+    }
+    if (badges.isEmpty())
+        return QString();
+    std::sort(badges.begin(), badges.end(), [](const PaintedImage *a, const PaintedImage *b) { return a->rect.x() < b->rect.x(); });
+    QStringList names;
+    for (const PaintedImage *pi : std::as_const(badges)) {
+        if (const QString name = humanizeIconName(pi->icon); !names.contains(name))
+            names << name;
+    }
+    // The number of people who reacted, drawn right of the faces.
+    QString count;
+    static const QRegularExpression number(QStringLiteral("^\\d[\\d,]*\\+?$"));
+    for (const CapturedText &it : cap.items) {
+        const QString t = cleanText(it.text);
+        if (it.pos.x() >= faces.left() && it.pos.y() >= faces.top() - 6 && it.pos.y() <= faces.bottom() + 6
+            && number.match(t).hasMatch()) {
+            count = t;
+            break;
+        }
+    }
+    if (names.isEmpty())
+        return label("has reactions");
+    if (names.size() == 1)
+        return count.isEmpty() ? label("Reaction: %1").arg(names.first()) : label("%1 %2 people").arg(names.first(), count);
+    const QString kinds = label("Reactions: %1").arg(names.join(QStringLiteral(", ")));
+    return count.isEmpty() ? kinds : label("%1, %2 people").arg(kinds, count);
+}
+
+// Reactions of the message at `row`, read from what LINE draws under it; remembered per message
+// (by its id) while it is out of view.
+QString messageReactions(QAbstractItemView *view, int row, const QString &messageId)
+{
+    struct Seen {
+        QString text;
+        qint64 at = 0;
+    };
+    static QHash<QString, Seen> seen;
+    if (messageId.isEmpty() || safeMode())
+        return QString();
+    Seen &entry = seen[messageId];
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    const QRect r = view->visualRect(view->model()->index(row, 0, view->rootIndex()));
+    const bool onScreen = !r.isEmpty() && view->viewport()->rect().contains(r);
+    if (!onScreen || (entry.at && now - entry.at < 1500))
+        return entry.text;
+    const CaptureResult cap = captureRowRect(view, r);
+    if (cap.skipped)
+        return entry.text;
+    entry.text = reactionSummary(cap);
+    entry.at = now;
+    if (seen.size() > 5000)
+        seen.clear();
+    return entry.text;
+}
+
+// A sender's round picture beside a received message (row coordinates; LINE also draws it as a
+// filled shape with the picture as its brush).
+bool isSenderPicture(const QRectF &r)
+{
+    return r.width() >= 30 && r.width() <= 45 && r.height() >= 30 && r.height() <= 45 && r.left() < 20 && r.top() >= -4
+        && qAbs(r.width() - r.height()) <= 4;
+}
+
+QRectF senderPicture(const CaptureResult &cap)
+{
+    for (const PaintedImage &pi : cap.images) {
+        if (isSenderPicture(pi.rect))
+            return pi.rect;
+    }
+    for (const PaintedShape &sh : cap.shapes) {
+        if (!sh.texture.isEmpty() && isSenderPicture(sh.rect))
+            return sh.rect;
+    }
+    return QRectF();
+}
+
+// Who a message row is from. The Windows bridge tells it from where LINE draws the row; here the
+// row's ChatMessageData says it (own messages by ListRowTextCache::isOwnMessage(), dates and
+// notices by their id / delegate).
+enum class RowSide { Empty, Received, Other };
+
+RowSide rowSide(QAbstractItemView *view, int row)
+{
+    QObject *data = rowData(view, row);
+    if (!inheritsClass(data, "ChatMessageData"))
+        return RowSide::Empty;
+    const ChatMessageFields f = readChatMessageData(data);
+    if (f.id.isEmpty())
+        return RowSide::Empty;
+    if (f.id.startsWith(QLatin1Char('l')) || f.senderMid.isEmpty())
+        return RowSide::Other; // dates, markers, notices
+    ListRowTextCache *cache = ListRowTextCache::forView(view);
+    if (cache && (cache->isOwnMessage(f) || cache->delegateClassFor(row).contains(QLatin1StringView("Info"))))
+        return RowSide::Other;
+    return RowSide::Received;
+}
+
+// The sender's name of a received message (as LINE shows it, else from the lists' data objects).
+QString senderNameOf(QAbstractItemView *view, int row)
+{
+    const ChatMessageFields f = readChatMessageData(rowData(view, row));
+    if (QString name = cleanText(f.senderName); !name.isEmpty())
+        return name;
+    return contactForMid(f.senderMid).name;
+}
+
+struct ProfileOffer {
+    QPointer<QAbstractItemView> view;
+    QPersistentModelIndex index;
+    QElapsedTimer at;
+    // Judged before the menu opens (while a menu shows, the capture may differ).
+    RowSide side = RowSide::Empty;
+    bool reactable = false; // "React" is offered (not for dates, notices, calls)
+    bool reacted = false;   // the user has reacted: "Remove reaction" instead
+    const char *noReaction = nullptr; // why not, for the log
+} g_profileOffer;
+
+constexpr const char *kExtraMenuItemProperty = "_lineA11yExtraMenuItem";
+
+QHash<const QWidget *, std::function<void()>> &extraMenuActions()
+{
+    static QHash<const QWidget *, std::function<void()>> actions;
+    return actions;
+}
+
+// The bridge's own menu item: invisible (1 px, paints nothing), present for the keyboard and
+// VoiceOver only.
+class ExtraMenuItem : public QAccessibleWidget
+{
+public:
+    explicit ExtraMenuItem(QWidget *w)
+        : QAccessibleWidget(w, QAccessible::MenuItem)
+    {
+    }
+    QString text(QAccessible::Text t) const override
+    {
+        return t == QAccessible::Name ? widget()->accessibleName() : QString();
+    }
+    QAccessible::State state() const override
+    {
+        QAccessible::State st = QAccessibleWidget::state();
+        st.focusable = true;
+        st.focused = widget()->hasFocus();
+        return st;
+    }
+    // A 1 px item would be a dot for VoiceOver's cursor: the size of the menu's last item instead.
+    QRect rect() const override
+    {
+        QWidget *menu = widget()->parentWidget();
+        if (!menu)
+            return QAccessibleWidget::rect();
+        const QRect bottom(menu->mapToGlobal(QPoint(0, qMax(0, menu->height() - 30))), QSize(menu->width(), 30));
+        return bottom;
+    }
+    QStringList actionNames() const override { return { pressAction() }; }
+    void doAction(const QString &action) override
+    {
+        if (action != pressAction())
+            return;
+        if (const std::function<void()> press = extraMenuActions().value(widget()))
+            QTimer::singleShot(0, widget(), press);
+    }
+};
+
+// ---- Search results and Notes (from what LINE paints; "Windows" coordinates) --------------------
+
+// A row of a chat's search results (ChatSearchResultWindow): the sender and the date on the first
+// line (the date drawn at the right edge), the matching text below, wrapped. Read as "sender, date,
+// text".
+QString searchResultRowText(QWidget *viewport, const QRect &rowRect, bool *skipped)
+{
+    const CaptureResult cap = scaledCapture(captureRegionText(viewport, rowRect), kWindowsScale);
+    *skipped = cap.skipped;
+    if (cap.skipped)
+        return QString();
+    struct Part {
+        qreal y;
+        qreal x;
+        qreal right;
+        QString text;
+    };
+    QList<Part> parts;
+    for (const CapturedText &it : cap.items) {
+        if (it.text.trimmed().isEmpty())
+            continue;
+        parts.append({ it.pos.y(), it.pos.x(), it.pos.x() + it.width, it.text });
+    }
+    // Lines: baselines a few pixels apart are one line (the date's font is smaller than the name's).
+    std::stable_sort(parts.begin(), parts.end(), [](const Part &a, const Part &b) { return a.y < b.y; });
+    qreal lineY = -1000;
+    for (Part &p : parts) {
+        if (p.y - lineY > 4)
+            lineY = p.y;
+        p.y = lineY;
+    }
+    std::stable_sort(parts.begin(), parts.end(), [](const Part &a, const Part &b) {
+        return a.y != b.y ? a.y < b.y : a.x < b.x;
+    });
+    // Runs LINE draws separately but touching are one text.
+    QList<Part> merged;
+    for (const Part &p : std::as_const(parts)) {
+        if (!merged.isEmpty() && merged.last().y == p.y && p.x - merged.last().right < 6) {
+            merged.last().text += p.text;
+            merged.last().right = p.right;
+        } else {
+            merged.append(p);
+        }
+    }
+    auto isThai = [](QChar c) { return c.unicode() >= 0x0E00 && c.unicode() <= 0x0E7F; };
+    QString out;
+    for (qsizetype i = 0; i < merged.size(); ++i) {
+        const QString t = cleanText(merged[i].text);
+        if (t.isEmpty())
+            continue;
+        if (out.isEmpty()) {
+            out = t;
+            continue;
+        }
+        const bool header = merged[i].y == merged.first().y || merged[i - 1].y == merged.first().y;
+        if (header)
+            out += QStringLiteral(", ") + t;
+        else if (isThai(out.back()) && isThai(t.front()))
+            out += t; // Thai wraps anywhere
+        else
+            out += QLatin1Char(' ') + t;
+    }
+    return out;
+}
+
+// A post's photos and videos (Notes of a group / OpenChat: TimelineListView rows drawn by
+// PostContentDelegateWidget): pictures of at least 100x80, duplicates (placeholder + picture) once.
+// `videos` tells which ones show a play button (album_note/play_icon.svg, 20x20 at the bottom left).
+QList<QRectF> postMedia(const CaptureResult &cap, QList<bool> *videos)
+{
+    QList<QRectF> media;
+    for (const PaintedImage &pi : cap.images) {
+        if (pi.rect.width() < 100 || pi.rect.height() < 80)
+            continue;
+        bool seen = false;
+        for (const QRectF &m : std::as_const(media))
+            seen = seen || m.intersected(pi.rect).width() * m.intersected(pi.rect).height() > 0.8 * m.width() * m.height();
+        if (!seen)
+            media << pi.rect;
+    }
+    if (videos) {
+        videos->clear();
+        for (const QRectF &m : std::as_const(media)) {
+            bool video = false;
+            for (const PaintedImage &pi : cap.images) {
+                if (!m.contains(pi.rect.center()) || pi.rect.width() > 48 || pi.rect.height() > 48)
+                    continue;
+                video = video || pi.icon == QLatin1StringView("video")
+                    || (pi.alpha && pi.rect.width() >= 14 && pi.rect.height() >= 14 && pi.rect.center().x() < m.center().x()
+                        && pi.rect.center().y() > m.center().y());
+            }
+            videos->append(video);
+        }
+    }
+    return media;
+}
+
+// The post's own text (what Copy text copies): the lines under the author's name and above the
+// reaction / comment bar, outside the pictures; lines on one baseline joined, others on new lines.
+QString postBodyText(const CaptureResult &cap, const QRect &rowRect)
+{
+    qreal barTop = rowRect.height() * kWindowsScale - 50;
+    for (const PaintedImage &pi : cap.images) {
+        if (pi.icon.startsWith(QLatin1StringView("note-")))
+            barTop = qMin(barTop, pi.rect.top() - 2);
+    }
+    const QList<QRectF> media = postMedia(cap, nullptr);
+    QList<const CapturedText *> lines;
+    for (const CapturedText &it : cap.items) {
+        if (cleanText(it.text).isEmpty() || it.pos.y() < 40 || it.pos.y() > barTop)
+            continue;
+        bool inMedia = false;
+        for (const QRectF &m : media)
+            inMedia = inMedia || m.contains(it.pos);
+        if (!inMedia)
+            lines << &it;
+    }
+    std::stable_sort(lines.begin(), lines.end(), [](const CapturedText *a, const CapturedText *b) {
+        return qAbs(a->pos.y() - b->pos.y()) > 4 ? a->pos.y() < b->pos.y() : a->pos.x() < b->pos.x();
+    });
+    QString out;
+    qreal lastY = -1000;
+    for (const CapturedText *it : std::as_const(lines)) {
+        if (out.isEmpty())
+            out = it->text.trimmed();
+        else if (qAbs(it->pos.y() - lastY) <= 4)
+            out += it->text; // runs on one line
+        else
+            out += QLatin1Char('\n') + it->text.trimmed();
+        lastY = it->pos.y();
+    }
+    return out.trimmed();
+}
+
+// The "More options" button of a post (album_note/more_icon.svg, top right), from the hidden row
+// template LINE draws the posts with: its centre relative to the row.
+QPointF postMoreButtonPoint()
+{
+    for (QWidget *top : QApplication::topLevelWidgets()) {
+        if (!inheritsClass(top, "PostContentDelegateWidget"))
+            continue;
+        for (QWidget *child : top->findChildren<QWidget *>()) {
+            if (inheritsClass(child, "LcButton") && iconSource(child).contains(QLatin1StringView("album_note/more_icon")))
+                return QPointF(child->mapTo(top, QPoint())) + QPointF(child->width() / 2.0, child->height() / 2.0);
+        }
+    }
+    return QPointF();
+}
+
+// A post: author, text, its photos / videos, the numbers of reactions and comments, the time
+// ("Peet, Video, 2 comments, 8 minutes ago").
+QString postRowText(QWidget *viewport, const QRect &rowRect, bool *skipped)
+{
+    const CaptureResult cap = scaledCapture(captureRegionText(viewport, rowRect), kWindowsScale);
+    *skipped = cap.skipped;
+    if (cap.skipped)
+        return QString();
+    struct Part {
+        qreal y;
+        qreal x;
+        qreal right;
+        QString text;
+    };
+    QList<Part> parts;
+    for (const CapturedText &it : cap.items) {
+        if (!cleanText(it.text).isEmpty())
+            parts.append({ it.pos.y(), it.pos.x(), it.pos.x() + it.width, it.text });
+    }
+    // The numbers beside the reaction / comment buttons say what they count.
+    static const QRegularExpression number(QStringLiteral("^\\d[\\d,.]*[KkMm+]?$"));
+    for (Part &p : parts) {
+        if (!number.match(cleanText(p.text)).hasMatch())
+            continue;
+        for (const PaintedImage &pi : cap.images) {
+            if (!pi.icon.startsWith(QLatin1StringView("note-")) || p.x < pi.rect.right() - 2 || p.x > pi.rect.right() + 12
+                || p.y < pi.rect.top() || p.y > pi.rect.bottom() + 6)
+                continue;
+            p.text = label(pi.icon == QLatin1StringView("note-comments") ? "%1 comments" : "%1 reactions").arg(cleanText(p.text));
+            break;
+        }
+    }
+    QList<bool> videos;
+    const QList<QRectF> media = postMedia(cap, &videos);
+    if (!media.isEmpty()) {
+        const qsizetype videoCount = videos.count(true);
+        const qsizetype photoCount = media.size() - videoCount;
+        QStringList kinds;
+        if (media.size() == 1) {
+            kinds << label(videoCount ? "Video" : "Photo");
+        } else {
+            if (photoCount)
+                kinds << label("%1 photos").arg(photoCount);
+            if (videoCount)
+                kinds << label("%1 videos").arg(videoCount);
+        }
+        qreal top = media.first().top();
+        for (const QRectF &m : media)
+            top = qMin(top, m.top());
+        parts.append({ top, 0, 0, kinds.join(QStringLiteral(", ")) });
+    }
+    // Lines: baselines a few pixels apart are one line.
+    std::stable_sort(parts.begin(), parts.end(), [](const Part &a, const Part &b) { return a.y < b.y; });
+    qreal lineY = -1000;
+    for (Part &p : parts) {
+        if (p.y - lineY > 4)
+            lineY = p.y;
+        p.y = lineY;
+    }
+    std::stable_sort(parts.begin(), parts.end(), [](const Part &a, const Part &b) {
+        return a.y != b.y ? a.y < b.y : a.x < b.x;
+    });
+    auto isThai = [](QChar c) { return c.unicode() >= 0x0E00 && c.unicode() <= 0x0E7F; };
+    QString out;
+    const Part *last = nullptr;
+    for (const Part &p : std::as_const(parts)) {
+        const QString t = cleanText(p.text);
+        if (t.isEmpty())
+            continue;
+        if (!last) {
+            out = t;
+        } else if (last->y == p.y && p.x - last->right < 6 && p.right > 0) {
+            out += t; // runs LINE draws separately
+        } else if (last->y != p.y && qAbs(last->x - p.x) <= 2 && p.right > 0 && last->right > 0
+                   && p.y - last->y < 30 && p.y > 40) {
+            // A wrapped line of the post's text (Thai wraps anywhere).
+            out += isThai(out.back()) && isThai(t.front()) ? t : QLatin1Char(' ') + t;
+        } else {
+            out += QStringLiteral(", ") + t;
+        }
+        last = &p;
+    }
+    return out;
+}
+
+// ---- Sticker packages ----------------------------------------------------------------------------
+
+// Sticker / emoji package names in package order, read from "My stickers" and kept in
+// sticker-packages.txt (kind TAB position TAB name) for the next start.
+QStringList &packageNames(bool emoji)
+{
+    static QStringList lists[2];
+    static bool loaded = false;
+    if (!loaded) {
+        loaded = true;
+        QFile file(bridgeDirectory() + QStringLiteral("sticker-packages.txt"));
+        if (file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            for (const QString &line : QString::fromUtf8(file.readAll()).split(QLatin1Char('\n'))) {
+                const QStringList parts = line.split(QLatin1Char('\t'));
+                if (parts.size() != 3)
+                    continue;
+                QStringList &list = lists[parts.at(0) == QLatin1StringView("emoji") ? 1 : 0];
+                const int at = parts.at(1).toInt();
+                if (at < 0 || at > 500)
+                    continue;
+                while (list.size() <= at)
+                    list << QString();
+                list[at] = parts.at(2);
+            }
+        }
+    }
+    return lists[emoji ? 1 : 0];
+}
+
+void notePackageName(bool emoji, int row, const QString &name, int rows)
+{
+    QStringList &list = packageNames(emoji);
+    if (rows <= 0 || row < 0 || row >= rows || (list.size() == rows && list.at(row) == name))
+        return;
+    while (list.size() < rows)
+        list << QString();
+    while (list.size() > rows)
+        list.removeLast();
+    list[row] = name;
+    QString out;
+    for (int kind = 0; kind < 2; ++kind) {
+        const QStringList &names = packageNames(kind == 1);
+        for (qsizetype i = 0; i < names.size(); ++i)
+            out += QStringLiteral("%1\t%2\t%3\n").arg(kind == 1 ? QStringLiteral("emoji") : QStringLiteral("sticker")).arg(i).arg(names.at(i));
+    }
+    QFile file(bridgeDirectory() + QStringLiteral("sticker-packages.txt"));
+    if (file.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text))
+        file.write(out.toUtf8());
+    a11yLog("[sticker] %s package %d is \"%s\"", emoji ? "emoji" : "sticker", row + 1, qUtf8Printable(name));
+}
+
+// The topmost line LINE draws in a list row (a package's name above its status).
+QString firstPaintedLine(QAbstractItemView *view, const QModelIndex &index)
+{
+    const QRect r = view->visualRect(index);
+    if (r.isEmpty() || !view->viewport()->rect().intersects(r))
+        return QString();
+    const CaptureResult cap = captureRegionText(view->viewport(), r);
+    if (cap.skipped || cap.items.isEmpty())
+        return QString();
+    qreal top = cap.items.first().pos.y();
+    for (const CapturedText &it : cap.items)
+        top = qMin(top, it.pos.y());
+    QList<const CapturedText *> line;
+    for (const CapturedText &it : cap.items) {
+        if (qAbs(it.pos.y() - top) < 1 && !it.text.trimmed().isEmpty())
+            line << &it;
+    }
+    std::sort(line.begin(), line.end(), [](const CapturedText *a, const CapturedText *b) { return a->pos.x() < b->pos.x(); });
+    QString text;
+    for (const CapturedText *it : std::as_const(line))
+        text += it->text;
+    return cleanText(text);
+}
+
+// The whole text LINE draws in a row, in reading order (rows of lists whose data has no properties).
+QString paintedRowLines(QAbstractItemView *view, const QModelIndex &index)
+{
+    const QRect r = view->visualRect(index);
+    if (r.isEmpty() || !view->viewport()->rect().intersects(r))
+        return QString();
+    const CaptureResult cap = captureRegionText(view->viewport(), r);
+    if (cap.skipped)
+        return QString();
+    return cleanText(capturedTextInReadingOrder(cap).replace(QLatin1Char('\n'), QLatin1StringView(", ")));
+}
+
+// The chat list: "Selected" before the name for the chat that is open (LINE's current row; the
+// bridge's cursor is separate; user request on Windows), and "Pinned" right after the name (LINE
+// draws a pin badge on the picture; ChatData has no property for it).
+bool chatPinned(QAbstractItemView *view, int row, QObject *data)
+{
+    struct Seen {
+        bool pinned = false;
+        qint64 at = 0;
+    };
+    static QHash<QString, Seen> seen;
+    const QString id = data->property("id").toString();
+    Seen &entry = seen[id];
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    const QRect r = view->visualRect(view->model()->index(row, 0, view->rootIndex()));
+    const bool onScreen = !r.isEmpty() && view->viewport()->rect().contains(r);
+    if (!onScreen || safeMode() || (entry.at && now - entry.at < 1500))
+        return entry.pinned; // off screen: what the row showed last time
+    const CaptureResult cap = captureRegionText(view->viewport(), r);
+    if (cap.skipped)
+        return entry.pinned;
+    entry.pinned = false;
+    static int logged = 0;
+    if (logged++ < 12) {
+        QStringList drawn;
+        for (const PaintedImage &image : cap.images)
+            drawn << QStringLiteral("%1x%2@%3,%4%5 %6").arg(image.size.width()).arg(image.size.height()).arg(image.rect.x())
+                         .arg(image.rect.y()).arg(image.icon.isEmpty() ? QString() : u'=' + image.icon,
+                                                  image.average.isValid() ? image.average.name() : QString());
+        for (const PaintedShape &shape : cap.shapes)
+            drawn << QStringLiteral("shape %1x%2@%3,%4 %5").arg(shape.rect.width()).arg(shape.rect.height())
+                         .arg(shape.rect.x()).arg(shape.rect.y()).arg(shape.texture.isEmpty() ? QString() : QStringLiteral("textured"));
+        for (const CapturedText &it : cap.items)
+            drawn << QStringLiteral("text@%1,%2").arg(it.pos.x()).arg(it.pos.y());
+        a11yLog("[list] chat row %d: %s", row, qPrintable(drawn.join(u' ')));
+    }
+    for (const PaintedImage &image : cap.images) {
+        // The blue badge (pin-badge.svg, #587DE4) on the picture's lower right corner; the same place
+        // holds a green badge for OpenChats. (Its shape alone matches round profile pictures.)
+        const QColor c = image.average;
+        if (c.isValid() && image.size.width() >= 20 && c.blue() > c.red() + 60 && c.blue() > c.green() + 30)
+            entry.pinned = true;
+    }
+    entry.at = now;
+    return entry.pinned;
+}
+
+// Is `data` (a ChatData of the chat list) the chat shown beside the list? LINE's current row is not:
+// it follows the arrows and right clicks without opening the chat. The open chat is the one named in
+// the chat header (name, and member count for groups: two chats can have the same name).
+bool isOpenChat(QAbstractItemView *view, QObject *data)
+{
+    QString shown;
+    int members = -1;
+    if (!openChatHeader(view, &shown, &members))
+        return false;
+    const QString name = cleanText(data->property("name").toString());
+    if (name.isEmpty())
+        return false;
+    bool same = name == shown;
+    // A long name is cut short in the header ("Grande Pleno (รังสิต): ขายอา...").
+    for (const QString &ellipsis : { QStringLiteral("..."), QStringLiteral("\u2026") }) {
+        if (!same && shown.endsWith(ellipsis)) {
+            const QString start = shown.chopped(ellipsis.size()).trimmed();
+            same = !start.isEmpty() && name.startsWith(start);
+        }
+    }
+    if (!same)
+        return false;
+    const QVariant count = data->property("memberCount");
+    return members < 0 || !count.isValid() || count.toInt() <= 0 || count.toInt() == members;
+}
+
+QString withChatStatus(QAbstractItemView *view, int row, const QString &text, QObject *data)
+{
+    QString result = text;
+    if (chatPinned(view, row, data)) {
+        const QString name = cleanText(data->property("name").toString());
+        const QString pinned = label("Pinned");
+        if (!name.isEmpty() && text.startsWith(name))
+            result = name + QStringLiteral(", ") + pinned + text.mid(name.size());
+        else
+            result = pinned + QStringLiteral(", ") + text;
+    }
+    if (isOpenChat(view, data))
+        result = label("Selected") + u' ' + result;
+    return result;
+}
+
+// The sticker window: "My stickers" (its Edit) draws each package's name, remembered for the package
+// strip, which shows pictures only (the first is the recently used ones).
+QString packageRowText(QAbstractItemView *view, int row, QObject *data)
+{
+    const int rows = view->model()->rowCount(view->rootIndex());
+    if (inheritsClass(data, "StickerEditPackageData") || inheritsClass(data, "SticonEditPackageData")) {
+        const QModelIndex idx = view->model()->index(row, 0, view->rootIndex());
+        const QString text = paintedRowLines(view, idx);
+        const QString name = firstPaintedLine(view, idx);
+        if (name.isEmpty())
+            return text;
+        notePackageName(inheritsClass(data, "SticonEditPackageData"), row, name, rows);
+        // Name, then its status ("never expires").
+        if (text.startsWith(name) && text.size() > name.size())
+            return name + QStringLiteral(", ") + text.mid(name.size()).remove(QRegularExpression(QStringLiteral("^[,\\s]+")));
+        return text;
+    }
+    if (inheritsClass(data, "StickerPackageData") || inheritsClass(data, "SticonPackageData")) {
+        if (row == 0)
+            return label("Recently used");
+        const QStringList &names = packageNames(inheritsClass(data, "SticonPackageData"));
+        if (names.size() == rows - 1 && !names.at(row - 1).isEmpty())
+            return names.at(row - 1);
+        return label("Package %1").arg(row);
+    }
+    return QString();
+}
+
+// Rows read from what LINE paints: Notes posts, search results, the photo grid / viewer strip.
+// Remembered per row position while out of view (until the list's model changes).
+QString paintedListRowText(QAbstractItemView *v, int row)
+{
+    const bool posts = isPostList(v);
+    const bool results = inheritsClass(v->window(), "ChatSearchResultWindow") && !inheritsClass(rowData(v, row), "ChatMessageData");
+    const bool viewerStrip = inheritsClass(v->window(), "MediaViewerWindow");
+    const QModelIndex idx = v->model()->index(row, 0, v->rootIndex());
+    const QRect r = v->visualRect(idx);
+    const bool grid = ancestorInheriting(v, "MediaListPanel") && !r.isEmpty() && r.width() < v->viewport()->width() / 2;
+    if (!posts && !results && !viewerStrip && !grid)
+        return QString();
+    struct Seen {
+        QPointer<QAbstractItemModel> model;
+        QString text;
+        qint64 at = 0;
+    };
+    static QHash<QPair<const QAbstractItemView *, int>, Seen> seen;
+    Seen &entry = seen[qMakePair(static_cast<const QAbstractItemView *>(v), row)];
+    if (entry.model != v->model())
+        entry = Seen { v->model(), QString(), 0 };
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (r.isEmpty() || !v->viewport()->rect().intersects(r) || (entry.at && now - entry.at < 1500))
+        return entry.text;
+    bool skipped = false;
+    QString text;
+    if (posts) {
+        text = postRowText(v->viewport(), r, &skipped);
+    } else if (results) {
+        text = searchResultRowText(v->viewport(), r, &skipped);
+    } else {
+        // Photos and videos: a video's thumbnail has a play icon or its length.
+        const CaptureResult cap = captureRowRect(v, r);
+        skipped = cap.skipped;
+        if (!skipped) {
+            static const QRegularExpression length(QStringLiteral("^\\d{1,2}:\\d{2}(:\\d{2})?$"));
+            // Only a video's length counts: LINE draws "See in chat" over the thumbnail under the mouse.
+            QString painted = cleanText(capturedTextInReadingOrder(cap).replace(QLatin1Char('\n'), QLatin1Char(' ')));
+            if (!length.match(painted).hasMatch())
+                painted.clear();
+            bool video = !painted.isEmpty();
+            for (const PaintedImage &pi : cap.images) {
+                video = video || pi.icon == QLatin1StringView("video") || pi.icon == QLatin1StringView("voice");
+                // The viewer's strip draws a video's mark itself: a picture at the thumbnail's bottom left.
+                if (viewerStrip) {
+                    const QRectF &ir = pi.rect;
+                    video = video || (pi.alpha && ir.width() >= 14 && ir.width() <= 28 && ir.height() >= 14 && ir.height() <= 28
+                                      && ir.center().y() > r.height() * kWindowsScale * 0.5 && ir.center().x() < r.width() * kWindowsScale * 0.4);
+                }
+            }
+            text = painted.isEmpty() ? label(video ? "Video" : "Photo") : label(video ? "Video" : "Photo") + QStringLiteral(", ") + painted;
+            // The grid's MediaData holds no sender or date: the month heading above is all there is.
+            if (grid) {
+                for (int h = row - 1; h >= 0; --h) {
+                    const QModelIndex hi = v->model()->index(h, 0, v->rootIndex());
+                    if (v->visualRect(hi).width() < v->viewport()->width() / 2)
+                        continue;
+                    if (const QString month = rowText(v, h); !month.isEmpty())
+                        text += QStringLiteral(", ") + month;
+                    break;
+                }
+            }
+        }
+    }
+    if (skipped)
+        return entry.text;
+    if (!text.isEmpty())
+        entry.text = text;
+    entry.at = now;
+    if (seen.size() > 4000)
+        seen.clear();
+    return entry.text;
+}
+
 void sendClick(QWidget *target, QPointF local)
 {
     QPointer<QWidget> guard(target);
@@ -507,6 +1266,22 @@ void sendClick(QWidget *target, QPointF local)
                         Qt::NoModifier);
     if (guard)
         QCoreApplication::sendEvent(target, &release);
+}
+
+void sendDoubleClick(QWidget *target, QPointF local)
+{
+    QPointer<QWidget> guard(target);
+    sendClick(target, local);
+    if (!guard)
+        return;
+    const QPointF scene = target->mapTo(target->window(), local);
+    const QPointF global = target->mapToGlobal(local);
+    QMouseEvent dbl(QEvent::MouseButtonDblClick, local, scene, global, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(target, &dbl);
+    if (!guard)
+        return;
+    QMouseEvent release(QEvent::MouseButtonRelease, local, scene, global, Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(target, &release);
 }
 
 // A right click at `local`: hover, press, release and, if LINE opened no menu on those, the mouse
@@ -733,7 +1508,11 @@ public:
             view->scrollTo(index);
             if (messages && list) {
                 // The message VoiceOver is on becomes the current one, then acts like Space / Enter
-                // (or the menu key) there.
+                // (or the menu key) there. With the keyboard in the list, a menu gives it back there.
+                if (menu && !view->hasFocus()) {
+                    view->window()->activateWindow();
+                    view->setFocus(Qt::PopupFocusReason); // keeps LINE's current row (see the event filter)
+                }
                 if (view->currentIndex() != index)
                     view->setCurrentIndex(index);
                 if (menu)
@@ -742,9 +1521,20 @@ public:
                     list->activateMessage();
                 return;
             }
+            if (menu && !view->hasFocus()) {
+                // The menu gives the keyboard back to where it was opened from: this list.
+                view->window()->activateWindow();
+                view->setFocus(Qt::PopupFocusReason);
+            }
             if (menu && list && isCursorList(view)) {
                 list->setCursorRow(index.row());
                 list->openCursorMenu();
+                return;
+            }
+            // Photos & videos / Links / Files and Notes: the bridge's own menu for the item.
+            if (menu && list) {
+                list->setCursorRow(index.row());
+                list->openContentMenu();
                 return;
             }
             // LcListView dispatches viewport mouse events to the row's delegate controller
@@ -755,6 +1545,8 @@ public:
             sendClick(view->viewport(), QRectF(view->visualRect(index)).center());
             if (picker)
                 notifyPickerRowLater(view, index.row());
+            else if (list && ancestorInheriting(view, "MainChatPanel") && isCursorList(view))
+                list->focusInputWhenOpened(index.row()); // a chat: start typing (user request)
             else if (!messages)
                 view->setFocus(Qt::OtherFocusReason);
         }, Qt::QueuedConnection);
@@ -763,7 +1555,11 @@ public:
     int row() const { return m_row; }
 
 private:
-    bool hasMenu() const { return ancestorInheriting(m_view, "ChatMessageView") || isCursorList(m_view); }
+    bool hasMenu() const
+    {
+        return ancestorInheriting(m_view, "ChatMessageView") || isCursorList(m_view) || isPostList(m_view)
+            || (inheritsClass(m_view->window(), "ContentViewerWindow") && !ancestorInheriting(m_view, "LcListView"));
+    }
 
     QPointer<QAbstractItemView> m_view;
     int m_row;
@@ -1120,6 +1916,11 @@ QString ListRowTextCache::textFromDelegates(quintptr dataObject)
     return text;
 }
 
+bool isPostList(const QWidget *w)
+{
+    return isLineListView(w) && inheritsClass(w, "TimelineListView");
+}
+
 // ---- LineAccessibleList --------------------------------------------------------------------------
 
 namespace {
@@ -1243,6 +2044,7 @@ void LineAccessibleList::checkModel() const
 // LINE gives the view a new model (and selection model) for each chat it opens: follow it.
 void LineAccessibleList::connectModel()
 {
+    ++m_edgeRequest;
     for (const QMetaObject::Connection &c : std::as_const(m_modelConnections))
         QObject::disconnect(c);
     m_modelConnections.clear();
@@ -1395,6 +2197,7 @@ void LineAccessibleList::focusLastVisibleRow()
 
 void LineAccessibleList::focusEdgeRow(bool last)
 {
+    ++m_edgeRequest;
     QAbstractItemView *v = view();
     const int rows = rowCount();
     if (!v || rows == 0)
@@ -1430,6 +2233,7 @@ bool LineAccessibleList::focusRememberedRow()
 
 bool LineAccessibleList::stepRow(int key)
 {
+    const quint64 request = ++m_edgeRequest;
     QAbstractItemView *v = view();
     const int rows = rowCount();
     if (!v || rows == 0)
@@ -1461,11 +2265,66 @@ bool LineAccessibleList::stepRow(int key)
         }
         travelled += v->visualRect(idx).height();
     }
-    // At the top LINE loads older messages once the first row is in view; Up then goes on.
+    // At an edge, actually reach the scroll limit (EnsureVisible can leave a spacer or
+    // part of a tall row off screen). Do not makeCurrent(): it scrolls back to the anchor.
+    // Only older history is loaded this way: at the newest message, Down reads it again at once
+    // (below), so the user knows it is the last one.
+    if (target == current && step < 0 && ancestorInheriting(v, "ChatMessageView")) {
+        const QPersistentModelIndex anchor(v->currentIndex());
+        // LINE only loaded history when a wheel movement CROSSED the edge: a wheel
+        // sent while already at zero was accepted but did nothing. Re-arm that transition
+        // by one scrollbar unit, then let LINE's own wheel handler cross the boundary.
+        if (QScrollBar *bar = v->verticalScrollBar()) {
+            const int inset = qMin(1, bar->maximum() - bar->minimum());
+            bar->setValue(step < 0 ? bar->minimum() + inset : bar->maximum() - inset);
+        }
+        QWidget *viewport = v->viewport();
+        const QPoint pos = viewport->rect().center();
+        QWheelEvent wheel(QPointF(pos), QPointF(viewport->mapToGlobal(pos)), QPoint(),
+                          QPoint(0, step < 0 ? 120 : -120), Qt::NoButton, Qt::NoModifier,
+                          Qt::NoScrollPhase, false);
+        QCoreApplication::sendEvent(viewport, &wheel);
+        continueEdgeStep(request, key, anchor, 30);
+        return true;
+    }
     if (target == current)
         v->scrollTo(v->model()->index(step < 0 ? 0 : rows - 1, 0, v->rootIndex()));
     makeCurrent(target);
     return true;
+}
+
+void LineAccessibleList::continueEdgeStep(quint64 request, int key, QPersistentModelIndex anchor, int attempts)
+{
+    const QPointer<QAbstractItemView> listView = view();
+    if (!listView || attempts <= 0)
+        return;
+    QTimer::singleShot(100, listView, [listView, request, key, anchor, attempts] {
+        auto *list = listFor(listView);
+        if (!list || list->m_edgeRequest != request || !listView->hasFocus() || !listView->isVisible()
+            || !anchor.isValid() || anchor.model() != listView->model() || listView->currentIndex() != anchor) {
+            return;
+        }
+        listView->doItemsLayout();
+        const int step = (key == Qt::Key_Up || key == Qt::Key_PageUp) ? -1 : 1;
+        for (int row = anchor.row() + step; row >= 0 && row < list->rowCount(); row += step) {
+            const QModelIndex idx = listView->model()->index(row, 0, listView->rootIndex());
+            listView->scrollTo(idx);
+            if (auto *item = list->itemAt(row); item && !item->text(QAccessible::Name).isEmpty()) {
+                // One key resumes once, even if LINE inserted an entire page.
+                list->stepRow(key);
+                return;
+            }
+        }
+        if (attempts <= 1) {
+            // Nothing older (the start of the chat): read the message again, as at any other edge.
+            list->makeCurrent(anchor.row());
+            return;
+        }
+        // Probing blank spacer rows must not undo the edge scroll either.
+        if (QScrollBar *bar = listView->verticalScrollBar())
+            bar->setValue(step < 0 ? bar->minimum() : bar->maximum());
+        list->continueEdgeStep(request, key, anchor, attempts - 1);
+    });
 }
 
 void LineAccessibleList::makeCurrent(int row)
@@ -1494,6 +2353,15 @@ QString LineAccessibleList::text(QAccessible::Text t) const
     if (t == QAccessible::Name) {
         if (QString name = cleanText(widget()->accessibleName()); !name.isEmpty())
             return name;
+        // An empty list shows a text beside it instead ("No files shared in this chat"): say it.
+        if (rowCount() == 0 && widget()->parentWidget()) {
+            for (QObject *sibling : widget()->parentWidget()->children()) {
+                auto *text = qobject_cast<QWidget *>(sibling);
+                if (text && text->isVisible() && inheritsClass(text, "LcText"))
+                    if (const QString empty = cleanText(extractLcTextString(text)); !empty.isEmpty())
+                        return empty;
+            }
+        }
         return listContextName(widget());
     }
     return QAccessibleWidget::text(t);
@@ -1583,17 +2451,153 @@ void LineAccessibleList::setCursorRow(int row)
     }
 }
 
+bool LineAccessibleList::moveGridCursor(int key)
+{
+    QAbstractItemView *v = view();
+    const int rows = rowCount();
+    if (!v || rows == 0)
+        return false;
+    const int from = qMax(0, cursorRow());
+    auto rectOf = [v](int r) { return v->visualRect(v->model()->index(r, 0, v->rootIndex())); };
+    // The nearest item in the next line up or down (items are laid out in model order). From a
+    // full-width heading ("October 2026") the line's first item.
+    auto nextLine = [&](int start, int step) {
+        const QRect a = rectOf(start);
+        int lineTop = 0, best = start;
+        bool inLine = false;
+        qreal bestDistance = 0;
+        for (int r = start + step; r >= 0 && r < rows; r += step) {
+            const QRect b = rectOf(r);
+            if (b.isEmpty())
+                continue;
+            if (!inLine) {
+                if (qAbs(b.center().y() - a.center().y()) < qMax(4, a.height() / 2))
+                    continue; // same line
+                lineTop = b.top();
+                inLine = true;
+            } else if (b.top() != lineTop) {
+                break;
+            }
+            const bool fromHeading = a.width() > 2 * b.width();
+            const qreal distance = fromHeading ? qAbs(b.left() - a.left()) : qAbs(b.center().x() - a.center().x());
+            if (best == start || distance < bestDistance) {
+                best = r;
+                bestDistance = distance;
+            }
+        }
+        return best;
+    };
+    int row = from;
+    switch (key) {
+    case Qt::Key_Left:
+        row = from - 1;
+        break;
+    case Qt::Key_Right:
+        row = from + 1;
+        break;
+    case Qt::Key_Up:
+    case Qt::Key_Down:
+        row = nextLine(from, key == Qt::Key_Down ? 1 : -1);
+        break;
+    case Qt::Key_PageUp:
+    case Qt::Key_PageDown: {
+        const int height = qMax(1, rectOf(from).height());
+        for (int i = qMax(1, v->viewport()->height() / height); i > 0; --i)
+            row = nextLine(row, key == Qt::Key_PageDown ? 1 : -1);
+        break;
+    }
+    case Qt::Key_Home:
+        row = 0;
+        break;
+    case Qt::Key_End:
+        row = rows - 1;
+        break;
+    default:
+        return false;
+    }
+    row = qBound(0, row, rows - 1);
+    const QModelIndex idx = v->model()->index(row, 0, v->rootIndex());
+    m_cursor = idx;
+    v->scrollTo(idx);
+    if (QAccessibleInterface *item = itemAt(row)) {
+        // NVDA ignores a second Focus event for the same item: at either end, repeat the name.
+        QAccessibleEvent event(item, row == from ? QAccessible::NameChanged : QAccessible::Focus);
+        QAccessible::updateAccessibility(&event);
+    }
+    return true;
+}
+
+bool LineAccessibleList::clickCursorRow()
+{
+    QAbstractItemView *v = view();
+    const int row = cursorRow();
+    if (!v || row < 0)
+        return false;
+    const QModelIndex idx = v->model()->index(row, 0, v->rootIndex());
+    v->scrollTo(idx);
+    const QRect r = v->visualRect(idx).intersected(v->viewport()->rect());
+    if (r.isEmpty())
+        return false;
+    a11yLog("[keyboard] click on row %d of %s", row, v->window()->metaObject()->className());
+    sendClick(v->viewport(), QRectF(r).center());
+    return true;
+}
+
 bool LineAccessibleList::openCursorRow()
 {
     QAbstractItemView *v = view();
     const QPersistentModelIndex idx = m_cursor;
     m_cursor = QPersistentModelIndex();
-    if (!v || !idx.isValid() || idx == QPersistentModelIndex(v->currentIndex()))
+    if (!v || !idx.isValid())
+        return false;
+    // Nothing to open if it is open already. For chats that is the one in the chat header: LINE's
+    // current row also moves on a right click (a row's menu) without opening that chat.
+    QObject *data = idx.data(kItemDataRole).value<QObject *>();
+    if (inheritsClass(data, "ChatData") ? isOpenChat(v, data) : idx == QPersistentModelIndex(v->currentIndex()))
         return false;
     // A click opens the chat the way LINE expects (setting the current row alone may not).
     v->scrollTo(idx);
     sendClick(v->viewport(), QRectF(v->visualRect(idx)).center());
     return true;
+}
+
+void LineAccessibleList::focusInputWhenOpened(int row)
+{
+    QAbstractItemView *v = view();
+    QObject *data = rowData(v, row);
+    if (!v || !inheritsClass(data, "ChatData"))
+        return;
+    QPointer<QAbstractItemView> listView(v);
+    QPointer<QObject> chat(data);
+    QWidget *window = v->window();
+    auto started = std::make_shared<QElapsedTimer>();
+    started->start();
+    auto *timer = new QTimer(v);
+    QObject::connect(timer, &QTimer::timeout, timer, [timer, listView, chat, window, started] {
+        // LINE loads the chat (up to a few seconds) and builds its message input afresh.
+        auto done = [timer] { timer->stop(); timer->deleteLater(); };
+        if (!listView || !chat || started->elapsed() > 5000)
+            return done();
+        // The user went somewhere else meanwhile (another window, a search field): leave it there.
+        QWidget *focus = QApplication::focusWidget();
+        if (focus && (focus->window() != window || (isLineInputWidget(focus) && !isMessageInput(focus))))
+            return done();
+        if (!isOpenChat(listView, chat))
+            return;
+        for (QWidget *w : window->findChildren<QWidget *>()) {
+            if (!w->isVisible() || !w->isEnabled() || !isMessageInput(w))
+                continue;
+            if (!window->isActiveWindow())
+                window->activateWindow();
+            endListBrowsing();
+            if (!w->hasFocus())
+                w->setFocus(Qt::OtherFocusReason);
+            a11yLog("[keyboard] chat opened from the list: focus to its message input after %lld ms",
+                    static_cast<long long>(started->elapsed()));
+            return done();
+        }
+    });
+    timer->start(100);
 }
 
 void LineAccessibleList::resetCursor()
@@ -1700,7 +2704,8 @@ bool LineAccessibleList::openMessageContent(int row)
     ListRowTextCache *c = cache();
     const QString cls = c ? c->delegateClassFor(row) : QString();
     const QString action = contentAction(cls, readChatMessageData(data));
-    if (action.isEmpty())
+    const bool sticker = cls.contains(QLatin1StringView("Sticker"));
+    if (action.isEmpty() && !sticker)
         return false;
     const QModelIndex idx = v->model()->index(row, 0, v->rootIndex());
     v->scrollTo(idx);
@@ -1708,6 +2713,26 @@ bool LineAccessibleList::openMessageContent(int row)
     const CaptureResult cap = captureRow(v, row, &r);
     if (cap.skipped)
         return false;
+    // A sound sticker's speaker button plays its sound again (user request). A click on the sticker
+    // itself opens the sticker window at its package: not done.
+    if (sticker) {
+        QStringList seen;
+        QPointF speaker;
+        for (const PaintedImage &icon : cap.images) {
+            seen << QStringLiteral("%1x%2@%3,%4:%5").arg(icon.rect.width()).arg(icon.rect.height()).arg(icon.rect.x())
+                        .arg(icon.rect.y()).arg(icon.icon);
+            if (icon.icon == QLatin1StringView("sticker-sound") && speaker.isNull())
+                speaker = icon.rect.center();
+        }
+        const QPointF local = speaker.isNull() ? QPointF() : viewportPoint(v, r, speaker);
+        if (local.isNull()) {
+            a11yLog("[keyboard] sticker in message row %d has no sound button (%s)", row, qPrintable(seen.join(QLatin1Char(' '))));
+            return false;
+        }
+        a11yLog("[keyboard] sound sticker in message row %d: click at %.0f,%.0f", row, local.x(), local.y());
+        sendClick(v->viewport(), local);
+        return true;
+    }
     const QRect windowsRow = scaledRect(r, kWindowsScale);
     auto isPlayIcon = [](const PaintedImage &icon) {
         return icon.icon == QLatin1StringView("voice") || icon.icon == QLatin1StringView("video");
@@ -1736,6 +2761,49 @@ bool LineAccessibleList::openMessageContent(int row)
     return true;
 }
 
+bool LineAccessibleList::openPostMedia()
+{
+    QAbstractItemView *v = view();
+    const int row = cursorRow();
+    if (!v || !v->model() || row < 0 || !isPostList(v))
+        return false;
+    const QModelIndex idx = v->model()->index(row, 0, v->rootIndex());
+    v->scrollTo(idx);
+    const QRect r = v->visualRect(idx);
+    const CaptureResult cap = captureRowRect(v, r);
+    if (cap.skipped)
+        return false;
+    QList<bool> videos;
+    const QList<QRectF> media = postMedia(cap, &videos);
+    if (media.isEmpty()) {
+        QStringList seen;
+        for (const PaintedImage &pi : cap.images)
+            seen << QStringLiteral("%1x%2@%3,%4%5:%6").arg(pi.rect.width()).arg(pi.rect.height()).arg(pi.rect.x())
+                        .arg(pi.rect.y()).arg(pi.alpha ? QStringLiteral("a") : QString()).arg(pi.icon);
+        a11yLog("[keyboard] post row %d shows no photo or video (%s)", row, qPrintable(seen.join(QLatin1Char(' '))));
+        return false;
+    }
+    // The first one (top, then left), where a mouse user clicks: the middle of the part on screen.
+    qsizetype first = 0;
+    for (qsizetype i = 1; i < media.size(); ++i) {
+        if (media[i].top() < media[first].top() - 4 || (qAbs(media[i].top() - media[first].top()) <= 4 && media[i].left() < media[first].left()))
+            first = i;
+    }
+    const QRectF shown = fromWindows(media[first]).translated(r.topLeft()).intersected(QRectF(v->viewport()->rect()).adjusted(1, 1, -1, -1));
+    if (shown.isEmpty())
+        return false;
+    const QPointF local = shown.center();
+    a11yLog("[keyboard] %s in post row %d: click at %.0f,%.0f", videos[first] ? "video" : "photo", row, local.x(), local.y());
+    noteMediaOpenedFrom(v->window());
+    QPointer<QWidget> viewport = v->viewport();
+    QMouseEvent move(QEvent::MouseMove, local, viewport->mapTo(viewport->window(), local),
+                     viewport->mapToGlobal(local), Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(viewport, &move);
+    if (viewport)
+        sendClick(viewport, local);
+    return true;
+}
+
 bool LineAccessibleList::toggleCursorRow()
 {
     QAbstractItemView *v = view();
@@ -1751,6 +2819,255 @@ bool LineAccessibleList::toggleCursorRow()
     return true;
 }
 
+bool LineAccessibleList::openSearchResult()
+{
+    QAbstractItemView *v = view();
+    const int row = cursorRow();
+    if (!v || !v->model() || row < 0 || !inheritsClass(v->window(), "ChatSearchResultWindow"))
+        return false;
+    const QModelIndex idx = v->model()->index(row, 0, v->rootIndex());
+    v->scrollTo(idx);
+    sendDoubleClick(v->viewport(), QRectF(v->visualRect(idx)).center());
+    // The chat this window searched: a popped-out chat window titled like it, else the main window.
+    auto windowName = [](QWidget *w) {
+        QAccessibleInterface *iface = QAccessible::queryAccessibleInterface(w);
+        return iface ? iface->text(QAccessible::Name) : QString();
+    };
+    const QString title = windowName(v->window()); // the chat's name (and member count)
+    QWidget *chat = nullptr;
+    for (QWidget *top : QApplication::topLevelWidgets()) {
+        if (!top->isVisible())
+            continue;
+        const QString name = inheritsClass(top, "ChatWindow") ? windowName(top) : QString();
+        if (!name.isEmpty() && !title.isEmpty() && (title.startsWith(name) || name.startsWith(title)))
+            chat = top;
+        else if (!chat && inheritsClass(top, "AllInOneWindow"))
+            chat = top;
+    }
+    a11yLog("[search] result row %d opened in %s", row, chat ? chat->metaObject()->className() : "-");
+    if (!chat)
+        return true;
+    QPointer<QWidget> guard(chat);
+    QTimer::singleShot(400, chat, [guard] {
+        if (!guard)
+            return;
+        for (auto *list : guard->findChildren<QAbstractItemView *>(QStringLiteral("lineMR_list_messages"))) {
+            if (!list->isVisible())
+                continue;
+            guard->activateWindow();
+            // Entering the messages while the search bar shows a result starts at the match.
+            list->setFocus(Qt::OtherFocusReason);
+            break;
+        }
+    });
+    return true;
+}
+
+int LineAccessibleList::senderPictureRow(int row, bool scroll, QRectF *picture) const
+{
+    QAbstractItemView *v = view();
+    if (!v || !v->model() || row < 0 || !ancestorInheriting(v, "ChatMessageView") || rowSide(v, row) != RowSide::Received)
+        return -1;
+    const QString sender = readChatMessageData(rowData(v, row)).senderMid;
+    const QRect shownArea = v->viewport()->rect();
+    // A run of messages from one person rarely has more than a few dozen rows.
+    for (int r = row; r >= 0 && r > row - 40; --r) {
+        const RowSide side = rowSide(v, r);
+        if (side == RowSide::Empty)
+            continue; // spacer rows between messages
+        if (side == RowSide::Other || readChatMessageData(rowData(v, r)).senderMid != sender)
+            return -1;
+        const QModelIndex idx = v->model()->index(r, 0, v->rootIndex());
+        if (scroll)
+            v->scrollTo(idx);
+        const QRect rect = v->visualRect(idx);
+        if (!rect.intersects(shownArea))
+            return -1;
+        const CaptureResult cap = captureRowRect(v, rect);
+        if (cap.skipped)
+            return -1;
+        const QRectF found = senderPicture(cap);
+        if (found.isEmpty())
+            continue;
+        if (picture)
+            *picture = fromWindows(found);
+        return r;
+    }
+    return -1;
+}
+
+bool LineAccessibleList::openSenderProfile(int row)
+{
+    QAbstractItemView *v = view();
+    QRectF picture;
+    const int pictureRow = senderPictureRow(row, true, &picture);
+    if (!v || pictureRow < 0)
+        return false;
+    const QModelIndex idx = v->model()->index(pictureRow, 0, v->rootIndex());
+    QRect r = v->visualRect(idx);
+    QPointF local = r.topLeft() + picture.center();
+    // The picture is at the top of its row, which may reach above the viewport.
+    if (!v->viewport()->rect().contains(local.toPoint())) {
+        v->scrollTo(idx, QAbstractItemView::PositionAtTop);
+        r = v->visualRect(idx);
+        local = r.topLeft() + picture.center();
+    }
+    if (!v->viewport()->rect().contains(local.toPoint()))
+        return false;
+    a11yLog("[keyboard] sender's picture of message row %d (row %d): click at %.0f,%.0f", row, pictureRow, local.x(),
+            local.y());
+    QPointer<QWidget> viewport = v->viewport();
+    QMouseEvent move(QEvent::MouseMove, local, viewport->mapTo(viewport->window(), local), viewport->mapToGlobal(local),
+                     Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(viewport, &move);
+    if (viewport)
+        sendClick(viewport, local);
+    return true;
+}
+
+namespace {
+
+// One of the bridge's items at the bottom of `menu`; `press` runs after the menu has closed.
+QWidget *addExtraMenuItem(QWidget *menu, const QString &name, std::function<void()> press)
+{
+    auto *item = new QWidget(menu);
+    item->setProperty(kExtraMenuItemProperty, true);
+    item->setAccessibleName(name);
+    item->setAttribute(Qt::WA_TransparentForMouseEvents);
+    item->setFocusPolicy(Qt::TabFocus);
+    // Below LINE's items: the menu keys reach it last (menu items are ordered top to bottom).
+    item->setGeometry(0, menu->height() - 1, 1, 1);
+    QPointer<QWidget> guard(menu);
+    extraMenuActions().insert(item, [guard, press] {
+        if (guard)
+            guard->hide();
+        // After the menu has closed and focus is back on the message.
+        QTimer::singleShot(150, qApp, press);
+    });
+    QObject::connect(item, &QObject::destroyed, [item] { extraMenuActions().remove(item); });
+    item->show();
+    a11yLog("[menu] added \"%s\"", qUtf8Printable(name));
+    return item;
+}
+
+} // namespace
+
+namespace {
+void sendHover(QWidget *target, QPointF local);
+} // namespace
+
+void addProfileMenuItem(QWidget *menu)
+{
+    removeExtraMenuItems(menu);
+    ProfileOffer offer = g_profileOffer;
+    g_profileOffer = ProfileOffer();
+    if (!menu || !offer.view || !offer.index.isValid() || !offer.at.isValid() || offer.at.elapsed() > 3000)
+        return;
+    // "React", or "Remove reaction" once the user has reacted (judgeReactions()). LINE draws the
+    // (filled) reaction button of the message under the mouse a little later: looked for again while
+    // the menu shows, and the item renamed.
+    if (offer.reactable) {
+        QPointer<QAbstractItemView> view = offer.view;
+        QPersistentModelIndex index = offer.index;
+        auto remove = std::make_shared<bool>(offer.reacted);
+        QPointer<QWidget> item = addExtraMenuItem(menu, label(*remove ? "Remove reaction" : "React"), [view, index, remove] {
+            auto *l = view ? dynamic_cast<LineAccessibleList *>(QAccessible::queryAccessibleInterface(view.data())) : nullptr;
+            if (!l || !index.isValid() || !l->openReactions(index.row(), *remove))
+                a11yLog("[reaction] message row %d could not be looked at", index.isValid() ? index.row() : -1);
+        });
+        for (int delay : { 100, 250, 500, 900 }) {
+            QTimer::singleShot(delay, item, [view, index, remove, item] {
+                if (*remove || !view || !index.isValid() || !item || !item->isVisible())
+                    return;
+                const CaptureResult cap = captureRowRect(view, view->visualRect(index));
+                if (std::none_of(cap.images.cbegin(), cap.images.cend(),
+                                 [](const PaintedImage &pi) { return pi.icon == QLatin1StringView("reaction-button-on"); }))
+                    return;
+                *remove = true;
+                item->setAccessibleName(label("Remove reaction"));
+                a11yLog("[menu] the user has reacted to row %d: \"%s\"", index.row(), qUtf8Printable(item->accessibleName()));
+            });
+        }
+    } else {
+        a11yLog("[menu] no reaction item: row %d (%s)", offer.index.row(), offer.noReaction ? offer.noReaction : "empty row");
+    }
+    // The user's own messages, notices and dates have no sender to show.
+    if (offer.side != RowSide::Received) {
+        a11yLog("[menu] no profile item: message row %d is not a received message (%d)", offer.index.row(), int(offer.side));
+        return;
+    }
+    auto *list = dynamic_cast<LineAccessibleList *>(QAccessible::queryAccessibleInterface(offer.view.data()));
+    if (!list)
+        return;
+    // One-to-one chats: the chat is the other person's already, no profile item (user request on
+    // Windows). (The first message of a run, with the picture, may be out of view: it is looked for
+    // on press.)
+    if (!chatHasMemberCount(offer.view))
+        return;
+    const QString name = senderNameOf(offer.view, offer.index.row());
+    QPointer<QAbstractItemView> view = offer.view;
+    QPersistentModelIndex index = offer.index;
+    addExtraMenuItem(menu, name.isEmpty() ? label("Show the sender's profile") : label("Show %1's profile").arg(name),
+                     [view, index] {
+        auto *l = view ? dynamic_cast<LineAccessibleList *>(QAccessible::queryAccessibleInterface(view.data())) : nullptr;
+        if (!l || !index.isValid() || !l->openSenderProfile(index.row()))
+            a11yLog("[menu] no sender's picture found for message row %d", index.isValid() ? index.row() : -1);
+    });
+}
+
+void removeExtraMenuItems(QWidget *menu)
+{
+    if (!menu)
+        return;
+    for (QWidget *w : menu->findChildren<QWidget *>()) {
+        if (isExtraMenuItem(w)) {
+            w->hide();
+            w->deleteLater();
+        }
+    }
+}
+
+bool isExtraMenuItem(const QWidget *w)
+{
+    return w && w->property(kExtraMenuItemProperty).toBool();
+}
+
+QAccessibleInterface *extraMenuItemAccessible(QWidget *w)
+{
+    if (!isExtraMenuItem(w))
+        return nullptr;
+    return new ExtraMenuItem(w);
+}
+
+namespace {
+
+// Whether the message menu offers "React" / "Remove reaction" for a row. LINE draws a message's
+// reaction button (filled when the user has reacted) while the mouse is over it; dates and notices
+// get none, and calls are left out (user request: LINE draws the button beside them too). Without
+// the button, a row with a time that is not centred is a message.
+void judgeReactions(ProfileOffer &offer, QAbstractItemView *view, int row, const QRect &r, const CaptureResult &first)
+{
+    // What the row is comes from its data: dates, markers and notices get no reactions, and calls
+    // are left out (user request on Windows: LINE draws the button beside them too).
+    const ChatMessageFields f = readChatMessageData(rowData(view, row));
+    ListRowTextCache *cache = ListRowTextCache::forView(view);
+    const QString cls = cache ? cache->delegateClassFor(row) : QString();
+    if (f.id.isEmpty() || f.id.startsWith(QLatin1Char('l')) || f.senderMid.isEmpty() || cls.contains(QLatin1StringView("Info")))
+        offer.noReaction = "a date or notice";
+    else if (cls.contains(QLatin1StringView("Call")))
+        offer.noReaction = "a call";
+    // LINE draws a message's reaction button (filled when the user has reacted) while the mouse is
+    // over it, a moment later (addProfileMenuItem() looks again).
+    if (const QPointF content = messageContentPoint(first, scaledRect(r, kWindowsScale)); !content.isNull())
+        sendHover(view->viewport(), QPointF(r.topLeft()) + fromWindows(content));
+    const CaptureResult hovered = captureRowRect(view, r);
+    for (const PaintedImage &pi : (hovered.skipped ? first : hovered).images)
+        offer.reacted = offer.reacted || pi.icon == QLatin1StringView("reaction-button-on");
+    offer.reactable = !offer.noReaction;
+}
+
+} // namespace
+
 bool LineAccessibleList::openRowMenu()
 {
     QAbstractItemView *v = view();
@@ -1759,14 +3076,723 @@ bool LineAccessibleList::openRowMenu()
         return false;
     const QModelIndex idx = v->model()->index(row, 0, v->rootIndex());
     v->scrollTo(idx);
+    g_profileOffer = ProfileOffer();
     QRect r;
     const CaptureResult cap = captureRow(v, row, &r);
     if (cap.skipped)
         return false;
+    // The bridge's own items for this message's menu (addProfileMenuItem()).
+    g_profileOffer.view = v;
+    g_profileOffer.index = idx;
+    g_profileOffer.side = rowSide(v, row);
+    judgeReactions(g_profileOffer, v, row, r, cap);
+    g_profileOffer.at.start();
     QList<QPointF> points = messageMenuPoints(cap, scaledRect(r, kWindowsScale));
     if (points.isEmpty()) // nothing recorded: the middle of the row
         points << QPointF(r.width() / 2.0, r.height() / 2.0) * kWindowsScale;
     tryRowMenu(v, idx, points, 0);
+    return true;
+}
+
+namespace {
+
+enum class ContentKind { Media, Link, File, Other };
+
+// Which tab of a chat's Photos & videos / Links / Files window (ContentViewerWindow) `v` is.
+ContentKind contentKind(const QWidget *v)
+{
+    if (ancestorInheriting(v, "MediaListPanel"))
+        return ContentKind::Media;
+    if (ancestorInheriting(v, "LinkListPanel"))
+        return ContentKind::Link;
+    if (ancestorInheriting(v, "FileListPanel"))
+        return ContentKind::File;
+    return ContentKind::Other;
+}
+
+void sendHover(QWidget *target, QPointF local)
+{
+    const QPointF scene = target->mapTo(target->window(), local);
+    const QPointF global = target->mapToGlobal(local);
+    QEnterEvent enter(local, scene, global);
+    QCoreApplication::sendEvent(target, &enter);
+    QMouseEvent move(QEvent::MouseMove, local, scene, global, Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(target, &move);
+}
+
+// Ends sendHover(): LINE stops drawing the hovered row's extras (a message's reaction button, which
+// replaces its time).
+void sendLeave(QWidget *target)
+{
+    QEvent leave(QEvent::Leave);
+    QCoreApplication::sendEvent(target, &leave);
+}
+
+// LINE draws a link's copy button and a file's download button only while the mouse is over the row
+// (UrlPreviewListDelegateWidget: contents_link_copy_icon.png at the row's right, then "View in chat").
+// After hovering: the rightmost small square picture without text in the right half of the row
+// (row coordinates), or a null point.
+QPointF hoverButtonPoint(const CaptureResult &cap, const QRect &rowRect)
+{
+    QRectF best;
+    for (const PaintedImage &pi : cap.images) {
+        const QRectF &r = pi.rect;
+        const bool small = r.width() >= 14 && r.width() <= 40 && qAbs(r.width() - r.height()) <= 6;
+        if (!small || r.center().x() < rowRect.width() * 0.55)
+            continue;
+        const bool hasText = std::any_of(cap.items.cbegin(), cap.items.cend(), [&r](const CapturedText &it) {
+            return !it.text.trimmed().isEmpty() && r.contains(it.pos);
+        });
+        if (!hasText && (best.isEmpty() || r.right() > best.right()))
+            best = r;
+    }
+    return best.isEmpty() ? QPointF() : best.center();
+}
+
+// The selection bar's buttons under the Photos & videos grid (Cancel, Download, Send to Keep Memo,
+// Share; right to left), if shown.
+QList<QWidget *> selectionBarButtons(const QWidget *window)
+{
+    QList<QWidget *> buttons;
+    for (QWidget *b : window->findChildren<QWidget *>()) {
+        if (b->isVisible() && inheritsClass(b, "LcButton")
+            && b->property("source").toString().contains(QLatin1StringView("common_btn_photo_right")))
+            buttons << b;
+    }
+    std::sort(buttons.begin(), buttons.end(), [](const QWidget *a, const QWidget *b) {
+        return a->mapToGlobal(QPoint(0, 0)).x() > b->mapToGlobal(QPoint(0, 0)).x();
+    });
+    return buttons;
+}
+
+bool fileDialogShown()
+{
+    for (QWidget *w : QApplication::topLevelWidgets()) {
+        if (w->isVisible() && inheritsClass(w, "LcFileDialog"))
+            return true;
+    }
+    return false;
+}
+
+// Photos & videos: tick the item's check button (MediaListDelegateWidget: 20 px at 154,10 of 189 px),
+// press Download in the selection bar that appears (LINE asks for a folder in Windows' dialog), and
+// clear the selection once that dialog has closed.
+void saveMediaItem(QAbstractItemView *v, const QModelIndex &idx)
+{
+    const QRect r = v->visualRect(idx);
+    const QPointF check(r.right() - 24, r.top() + 20);
+    sendHover(v->viewport(), check);
+    sendClick(v->viewport(), check);
+    QPointer<QWidget> window(v->window());
+    QTimer::singleShot(300, window, [window] {
+        if (!window)
+            return;
+        const QList<QWidget *> bar = selectionBarButtons(window);
+        static const QStringList kDownload = { QStringLiteral("ดาวน์โหลด"), QStringLiteral("Download"),
+                                               QStringLiteral("ダウンロード"), QStringLiteral("下载"),
+                                               QStringLiteral("下載") };
+        QWidget *download = nullptr;
+        for (QWidget *b : bar) {
+            if (kDownload.contains(cleanText(b->property("text").toString())))
+                download = b;
+        }
+        if (!download && bar.size() >= 2)
+            download = bar.at(1);
+        if (!download) {
+            a11yLog("[content] save: no Download button after ticking the item");
+            return;
+        }
+        a11yLog("[content] save: Download pressed");
+        sendClick(download, QRectF(download->rect()).center());
+        // After the folder dialog (saved or cancelled), leave selection mode.
+        auto *timer = new QTimer(window);
+        auto seen = std::make_shared<bool>(false);
+        auto started = std::make_shared<QElapsedTimer>();
+        started->start();
+        QObject::connect(timer, &QTimer::timeout, timer, [window, timer, seen, started] {
+            if (fileDialogShown()) {
+                *seen = true;
+                return;
+            }
+            if (!*seen && started->elapsed() < 3000)
+                return;
+            timer->deleteLater();
+            if (!window)
+                return;
+            if (const QList<QWidget *> left = selectionBarButtons(window); !left.isEmpty())
+                sendClick(left.first(), QRectF(left.first()->rect()).center());
+        });
+        timer->start(300);
+    });
+}
+
+// Links / files: hover the row, then click its button (copy link / download).
+void clickHoverButton(QAbstractItemView *v, const QModelIndex &idx, const char *what)
+{
+    const QRect r = v->visualRect(idx);
+    sendHover(v->viewport(), QRectF(r).center());
+    QPointer<QAbstractItemView> view(v);
+    const QPersistentModelIndex index(idx);
+    QTimer::singleShot(150, v, [view, index, what] {
+        if (!view || !index.isValid())
+            return;
+        const QRect rect = view->visualRect(index);
+        const CaptureResult cap = captureRegionText(view->viewport(), rect);
+        const QPointF point = cap.skipped ? QPointF() : hoverButtonPoint(cap, rect);
+        QStringList seen;
+        for (const PaintedImage &pi : cap.images)
+            seen << QStringLiteral("%1x%2@%3,%4").arg(pi.rect.width()).arg(pi.rect.height()).arg(pi.rect.x()).arg(pi.rect.y());
+        for (const PaintedShape &sh : cap.shapes)
+            seen << QStringLiteral("shape %1x%2@%3,%4").arg(sh.rect.width()).arg(sh.rect.height()).arg(sh.rect.x()).arg(sh.rect.y());
+        for (const CapturedText &it : cap.items)
+            seen << QStringLiteral("\"%1\"@%2,%3").arg(it.text.trimmed()).arg(it.pos.x()).arg(it.pos.y());
+        a11yLog("[content] %s: %s (pictures %s)", what,
+                point.isNull() ? "no button found"
+                               : qPrintable(QStringLiteral("click at %1,%2").arg(point.x()).arg(point.y())),
+                qPrintable(seen.join(QLatin1Char(' '))));
+        if (!point.isNull())
+            sendClick(view->viewport(), rect.topLeft() + point);
+    });
+}
+
+struct PendingMenuChoice {
+    QStringList texts;
+    QElapsedTimer at;
+} g_menuChoice;
+
+// The chat's message list in a window showing one (the main window or a popped-out chat).
+QAbstractItemView *visibleMessageList()
+{
+    for (QWidget *top : QApplication::topLevelWidgets()) {
+        if (!top->isVisible())
+            continue;
+        for (QWidget *w : top->findChildren<QWidget *>()) {
+            if (inheritsClass(w, "LcListView") && w->isVisible() && ancestorInheriting(w, "ChatMessageView")
+                && !ancestorInheriting(w, "SearchDetailPanel") && !ancestorInheriting(w, "LcListView"))
+                return static_cast<QAbstractItemView *>(w);
+        }
+    }
+    return nullptr;
+}
+
+// Files: LINE draws no download button on the row, only "View in chat" (on hover); the message's own
+// menu has "Save as...". So: View in chat, then that message's menu, then Save as (LINE asks where).
+void saveFileItem(QAbstractItemView *v, const QModelIndex &idx)
+{
+    const QRect r = v->visualRect(idx);
+    sendHover(v->viewport(), QRectF(r).center());
+    QPointer<QAbstractItemView> view(v);
+    const QPersistentModelIndex index(idx);
+    QTimer::singleShot(150, v, [view, index] {
+        if (!view || !index.isValid())
+            return;
+        const QRect rect = view->visualRect(index);
+        const CaptureResult cap = captureRegionText(view->viewport(), rect);
+        // The text button in the right half of the row ("View in chat", 62x27).
+        QRectF button;
+        for (const PaintedShape &sh : cap.shapes) {
+            const QRectF &b = sh.rect;
+            if (b.width() < 40 || b.width() > 160 || b.height() < 18 || b.height() > 40 || b.center().x() < rect.width() * 0.55)
+                continue;
+            const bool hasText = std::any_of(cap.items.cbegin(), cap.items.cend(), [&b](const CapturedText &it) {
+                return !it.text.trimmed().isEmpty() && b.adjusted(-2, -2, 2, 30).contains(it.pos);
+            });
+            if (hasText)
+                button = b;
+        }
+        if (button.isEmpty()) {
+            a11yLog("[content] save file: no View in chat button");
+            return;
+        }
+        a11yLog("[content] save file: View in chat");
+        sendClick(view->viewport(), rect.topLeft() + button.center());
+        // Once the chat shows the message (LINE makes it the current row), its menu: Save as.
+        QTimer::singleShot(1200, qApp, [] {
+            QAbstractItemView *messages = visibleMessageList();
+            LineAccessibleList *list = messages ? LineAccessibleList::listFor(messages) : nullptr;
+            if (!list) {
+                a11yLog("[content] save file: no message list after View in chat");
+                return;
+            }
+            g_menuChoice.texts = { QStringLiteral("บันทึกเป็น..."), QStringLiteral("Save as..."), QStringLiteral("Save As..."),
+                                   QStringLiteral("名前を付けて保存"), QStringLiteral("另存为"), QStringLiteral("另存新檔") };
+            g_menuChoice.at.start();
+            messages->window()->activateWindow();
+            messages->setFocus(Qt::OtherFocusReason);
+            if (!list->openRowMenu())
+                a11yLog("[content] save file: no menu for the message");
+        });
+    });
+}
+
+} // namespace
+
+namespace {
+
+// LINE's reaction picker (a ReactionDockWidget in the chat's ChatMessageView): its choices in
+// display order (LcImages of cache category "reactionDock").
+QList<QWidget *> reactionChoices(QWidget *dock)
+{
+    QList<QWidget *> choices;
+    for (QWidget *w : dock->findChildren<QWidget *>()) {
+        if (w->isVisible() && inheritsClass(w, "LcImage") && stringProp(w, "cacheCategory") == QLatin1StringView("reactionDock"))
+            choices << w;
+    }
+    std::sort(choices.begin(), choices.end(), [dock](QWidget *a, QWidget *b) {
+        return a->mapTo(dock, QPoint()).x() < b->mapTo(dock, QPoint()).x();
+    });
+    return choices;
+}
+
+// Nothing drawn: every pixel (nearly) transparent, or (QWidget::grab() on macOS paints the picker's
+// background) all of one colour.
+bool isBlankImage(const QImage &image)
+{
+    const QImage argb = image.convertToFormat(QImage::Format_ARGB32);
+    if (argb.isNull())
+        return false;
+    const QRgb background = argb.pixel(0, 0);
+    auto same = [background](QRgb p) {
+        return qAbs(qRed(p) - qRed(background)) < 16 && qAbs(qGreen(p) - qGreen(background)) < 16
+            && qAbs(qBlue(p) - qBlue(background)) < 16;
+    };
+    for (int y = 0; y < argb.height(); ++y) {
+        const QRgb *line = reinterpret_cast<const QRgb *>(argb.constScanLine(y));
+        for (int x = 0; x < argb.width(); ++x) {
+            if (qAlpha(line[x]) > 16 && !(qAlpha(background) > 16 && same(line[x])))
+                return false;
+        }
+    }
+    return true;
+}
+
+QWidget *visibleReactionDock(QWidget *window)
+{
+    for (QWidget *w : window->findChildren<QWidget *>()) {
+        if (w->isVisible() && inheritsClass(w, "ReactionDockWidget"))
+            return w;
+    }
+    return nullptr;
+}
+
+// LINE placed the picker where the row template was drawn (far off screen): put it above the
+// reaction button `at` (viewport coordinates), make its choices Tab stops and focus the first. Once
+// it closes (a choice made, Escape), focus goes back to the message.
+void prepareReactionDock(QAbstractItemView *view, QPointF at, bool remove)
+{
+    QWidget *dock = visibleReactionDock(view->window());
+    if (!dock || !dock->parentWidget()) {
+        a11yLog("[reaction] the picker did not open");
+        return;
+    }
+    QWidget *parent = dock->parentWidget();
+    const QPoint button = view->viewport()->mapTo(parent, at.toPoint());
+    const int x = std::clamp(button.x() - dock->width() / 2, 0, qMax(0, parent->width() - dock->width()));
+    int y = button.y() - 12 - dock->height();
+    if (y < 0)
+        y = qMin(button.y() + 12, qMax(0, parent->height() - dock->height()));
+    dock->move(x, y);
+    dock->raise();
+    const QList<QWidget *> choices = reactionChoices(dock);
+    QStringList names;
+    for (QWidget *choice : choices) {
+        choice->setFocusPolicy(Qt::TabFocus);
+        choice->setProperty("_lineA11yFocusable", true);
+        // The pictures are LINE's reaction faces (text_capture.cpp: "reaction-love", ...).
+        const QImage picture = choice->paintingActive() ? QImage() : choice->grab().toImage();
+        const QString icon = reactionIcon(picture);
+        // <a11y dir>/icon-debug: keep the pictures for comparing them with LINE's icons.
+        if (QFile::exists(bridgeDirectory() + QStringLiteral("icon-debug")))
+            picture.save(bridgeDirectory() + QStringLiteral("reaction-choice-%1.png").arg(choices.indexOf(choice)));
+        choice->setProperty("_lineA11yReaction", icon);
+        // The faces are animated (16 frames a second): each frame repainted the messages under the
+        // picker, and a long message kept LINE so busy that every NVDA query waited ~130 ms (NVDA
+        // froze and said nothing). Still faces while the keyboard uses the picker.
+        if (choice->property("running").toBool())
+            choice->setProperty("running", false);
+        // Qt's own interface (a grouping) may be cached from before: now a button.
+        repairCachedInterface(choice);
+        // LINE leaves the reaction the user already gave blank (pressing it takes it back).
+        choice->setProperty("_lineA11yReactionChosen", !picture.isNull() && isBlankImage(picture));
+        QString name = icon.startsWith(QLatin1StringView("reaction-")) ? humanizeIconName(icon) : QString();
+        // The last, smaller choice (a plain smiley) opens LINE's other reactions.
+        if (name.isEmpty() && choice == choices.last() && choice->width() < choices.first()->width())
+            name = label("More reactions");
+        if (name.isEmpty())
+            name = label("Reactions");
+        choice->setAccessibleName(name);
+        names << QStringLiteral("%1 (%2 %3x%4 clicked()=%5)").arg(name, icon).arg(choice->width()).arg(choice->height())
+                         .arg(int(isSignalConnected(choice, "clicked()")));
+    }
+    // The reaction already chosen is drawn highlighted and is not recognised. The picker shows LINE's
+    // five basic reactions (in an order LINE changes: the one given came first once), so a single
+    // unknown face is the kind missing from the others, and it is the chosen one.
+    static const char *const kBasic[] = { "reaction-like", "reaction-love", "reaction-fun", "reaction-envy", "reaction-sad" };
+    if (choices.size() == 6) {
+        int unknown = -1;
+        QStringList missing;
+        for (const char *kind : kBasic)
+            missing << QLatin1String(kind);
+        for (int i = 0; i < 5; ++i) {
+            const QString icon = choices.at(i)->property("_lineA11yReaction").toString();
+            if (icon.isEmpty())
+                unknown = unknown < 0 ? i : 99;
+            else
+                missing.removeAll(icon);
+        }
+        if (unknown >= 0 && unknown < 5 && missing.size() == 1) {
+            choices.at(unknown)->setProperty("_lineA11yReaction", missing.first());
+            choices.at(unknown)->setAccessibleName(humanizeIconName(missing.first()));
+            names[unknown] = choices.at(unknown)->accessibleName() + QStringLiteral(" (the missing kind)");
+            choices.at(unknown)->setProperty("_lineA11yReactionChosen", true);
+        }
+    }
+    for (qsizetype i = 0; i < choices.size(); ++i) {
+        QWidget *choice = choices.at(i);
+        if (choice->property("_lineA11yReactionChosen").toBool()) {
+            choice->setAccessibleName(label("%1, chosen").arg(choice->accessibleName()));
+            names[i] = choice->accessibleName();
+        }
+    }
+    a11yLog("[reaction] picker at %d,%d with %d choices: %s", x, y, int(choices.size()), qUtf8Printable(names.join(u", ")));
+    if (choices.isEmpty())
+        return;
+    // "Remove reaction": choosing the reaction given again takes it back.
+    if (remove) {
+        for (QWidget *choice : choices) {
+            if (choice->property("_lineA11yReactionChosen").toBool()) {
+                a11yLog("[reaction] removing \"%s\"", qUtf8Printable(choice->accessibleName()));
+                sendMouseClick(choice);
+                for (QWidget *c : choices)
+                    c->setProperty("running", true);
+                QPointer<QAbstractItemView> list(view);
+                QTimer::singleShot(150, view, [list] {
+                    if (!list)
+                        return;
+                    sendLeave(list->viewport());
+                    list->setFocus(Qt::PopupFocusReason);
+                });
+                return;
+            }
+        }
+        a11yLog("[reaction] no chosen reaction to remove: the picker stays open");
+    }
+    for (qsizetype i = 1; i < choices.size(); ++i)
+        QWidget::setTabOrder(choices.at(i - 1), choices.at(i));
+    // Not a list LINE pulled focus away from: the bridge's list guard must not send it back.
+    endListBrowsing();
+    choices.first()->setFocus(Qt::OtherFocusReason);
+    QPointer<QWidget> guard(dock);
+    QPointer<QAbstractItemView> list(view);
+    // Qt moves focus on (to the title bar) when the picker hides: remember it was in the picker.
+    // (The timer belongs to the list: LINE for macOS deletes the picker when it closes.)
+    auto *timer = new QTimer(view);
+    auto started = std::make_shared<QElapsedTimer>();
+    started->start();
+    auto focused = std::make_shared<bool>(true);
+    QObject::connect(timer, &QTimer::timeout, timer, [timer, guard, list, started, focused] {
+        if (guard && guard->isVisible() && started->elapsed() < 120000) {
+            QWidget *focus = QApplication::focusWidget();
+            *focused = focus && guard->isAncestorOf(focus);
+            return;
+        }
+        timer->deleteLater();
+        if (guard && guard->isVisible())
+            return;
+        // Animated again for the mouse.
+        if (guard) {
+            for (QWidget *choice : guard->findChildren<QWidget *>()) {
+                if (choice->property("_lineA11yReaction").isValid() && !choice->property("running").toBool())
+                    choice->setProperty("running", true);
+            }
+        }
+        if (list)
+            sendLeave(list->viewport());
+        if (list && list->isVisible() && *focused) {
+            a11yLog("[reaction] picker closed: back to the message");
+            list->setFocus(Qt::PopupFocusReason);
+        }
+    });
+    timer->start(100);
+}
+
+// The reaction button of LINE's hidden row template (a *DelegateWidget top-level) that was just set
+// to the row `rect` of `view`: same width, button at the same place. LINE does not always give the
+// template the row's height (a 58 px message drawn by a 256 px template): an equal size comes first.
+QWidget *reactionTemplateButton(QAbstractItemView *view, const QRect &rect, const QRectF &button)
+{
+    QWidget *sameWidth = nullptr;
+    for (QWidget *w : QApplication::allWidgets()) {
+        if (!iconSource(w).contains(QLatin1StringView("ic-reaction-o")) || !inheritsClass(w, "LcButton"))
+            continue;
+        QWidget *top = w->window();
+        if (top == view->window() || top->width() != rect.width() || w->mapTo(top, QPoint()) != button.topLeft().toPoint())
+            continue;
+        if (top->height() == rect.height())
+            return w;
+        if (!sameWidth)
+            sameWidth = w;
+    }
+    return sameWidth;
+}
+
+QString reactionTemplateCandidates()
+{
+    QStringList candidates;
+    for (QWidget *w : QApplication::allWidgets()) {
+        if (!iconSource(w).contains(QLatin1StringView("ic-reaction-o")) || !inheritsClass(w, "LcButton"))
+            continue;
+        QWidget *top = w->window();
+        const QPoint p = w->mapTo(top, QPoint());
+        candidates << QStringLiteral("%1 %2x%3 button %4,%5").arg(QLatin1String(top->metaObject()->className()))
+                          .arg(top->width()).arg(top->height()).arg(p.x()).arg(p.y());
+    }
+    return candidates.join(QStringLiteral("; "));
+}
+
+void pressReactionTemplate(QAbstractItemView *view, QWidget *templateButton, QPointF at, bool remove)
+{
+    QMetaObject::invokeMethod(templateButton, "clicked");
+    QPointer<QAbstractItemView> guard(view);
+    QTimer::singleShot(80, view, [guard, at, remove] {
+        if (guard)
+            prepareReactionDock(guard, at, remove);
+    });
+}
+
+} // namespace
+
+bool LineAccessibleList::openReactions(int row, bool remove)
+{
+    QAbstractItemView *v = view();
+    if (!v || !v->model() || row < 0 || row >= rowCount())
+        return false;
+    const QModelIndex idx = v->model()->index(row, 0, v->rootIndex());
+    v->scrollTo(idx);
+    const QRect r = v->visualRect(idx);
+    const CaptureResult cap = captureRegionText(v->viewport(), r);
+    if (cap.skipped)
+        return false;
+    // LINE draws the reaction button beside the message while the mouse is over it.
+    QPointF content = messageContentPoint(cap, r);
+    if (content.isNull())
+        content = QRectF(r).center() - QPointF(r.topLeft());
+    sendHover(v->viewport(), QPointF(r.topLeft()) + content);
+    QList<QRectF> before;
+    for (const PaintedImage &pi : cap.images)
+        before << pi.rect;
+    QPointer<QAbstractItemView> view(v);
+    const QPersistentModelIndex index(idx);
+    QTimer::singleShot(200, v, [view, index, before, remove] {
+        if (!view || !index.isValid())
+            return;
+        const QRect rect = view->visualRect(index);
+        // Drawing the row also sets LINE's row template (a hidden *DelegateWidget) to this message.
+        const CaptureResult hovered = captureRegionText(view->viewport(), rect);
+        QRectF button;
+        QStringList seen;
+        for (const PaintedImage &pi : hovered.images) {
+            seen << QStringLiteral("%1x%2@%3,%4%5").arg(pi.rect.width()).arg(pi.rect.height()).arg(pi.rect.x()).arg(pi.rect.y())
+                        .arg(pi.icon.isEmpty() ? QString() : QLatin1Char(':') + pi.icon);
+            // A small square picture outside every bubble and photo (a thin smiley: its shape alone is
+            // too close to a video's play button, which lies inside the thumbnail). One that appeared
+            // with the mouse comes first (the menu's right click may have hovered the row already).
+            const bool small = pi.rect.width() >= 14 && pi.rect.width() <= 32 && qAbs(pi.rect.width() - pi.rect.height()) <= 3;
+            const bool inside = std::any_of(hovered.images.cbegin(), hovered.images.cend(), [&pi](const PaintedImage &o) {
+                return o.rect.width() > pi.rect.width() + 4 && o.rect.adjusted(-1, -1, 1, 1).contains(pi.rect);
+            });
+            if (!small || inside || !pi.alpha)
+                continue;
+            const bool appeared = std::none_of(before.cbegin(), before.cend(), [&pi](const QRectF &b) {
+                return qAbs(b.x() - pi.rect.x()) < 1 && qAbs(b.y() - pi.rect.y()) < 1;
+            });
+            if (button.isEmpty() || appeared || pi.icon.startsWith(QLatin1StringView("reaction-button")))
+                button = pi.rect;
+        }
+        if (button.isEmpty() || hovered.skipped) {
+            a11yLog("[reaction] row %d: no reaction button (pictures %s)", index.row(), qPrintable(seen.join(QLatin1Char(' '))));
+            return;
+        }
+        const QPointF at = QPointF(rect.topLeft()) + button.center();
+        // A click on the drawn button does nothing (LINE checks the real mouse); the button of the row
+        // template drawing this message opens the picker. LINE may draw the row from its cache, leaving
+        // the template set to another message: a data change for the row (the data stays the same)
+        // makes the next capture draw it through a template.
+        QAbstractItemModel *model = const_cast<QAbstractItemModel *>(index.model());
+        Q_EMIT model->dataChanged(QModelIndex(index), QModelIndex(index));
+        const QString pictures = seen.join(QLatin1Char(' '));
+        QTimer::singleShot(100, view, [view, index, button, at, pictures, remove] {
+            if (!view || !index.isValid())
+                return;
+            const QRect rect = view->visualRect(index);
+            const CaptureResult again = captureRegionText(view->viewport(), rect);
+            if (QWidget *templateButton = again.skipped ? nullptr : reactionTemplateButton(view, rect, button)) {
+                a11yLog("[reaction] row %d: opening the picker (%s %dx%d; pictures %s)", index.row(),
+                        templateButton->window()->metaObject()->className(), templateButton->window()->width(),
+                        templateButton->window()->height(), qPrintable(pictures));
+                pressReactionTemplate(view, templateButton, at, remove);
+                return;
+            }
+            a11yLog("[reaction] row %d: no row template with the button at %.0f,%.0f (%s); clicking", index.row(),
+                    button.x(), button.y(),
+                    qPrintable(reactionTemplateCandidates()));
+            sendHover(view->viewport(), at);
+            sendClick(view->viewport(), at);
+            QTimer::singleShot(80, view, [view, at, remove] {
+                if (view)
+                    prepareReactionDock(view, at, remove);
+            });
+        });
+    });
+    return true;
+}
+
+QWidget *takePendingMenuChoice(const QList<QWidget *> &items)
+{
+    if (g_menuChoice.texts.isEmpty() || !g_menuChoice.at.isValid() || g_menuChoice.at.elapsed() > 5000)
+        return nullptr;
+    for (QWidget *item : items) {
+        QAccessibleInterface *iface = QAccessible::queryAccessibleInterface(item);
+        const QString text = iface ? cleanText(iface->text(QAccessible::Name)) : QString();
+        if (g_menuChoice.texts.contains(text)) {
+            g_menuChoice = PendingMenuChoice();
+            a11yLog("[content] pressing \"%s\" in the message's menu", qUtf8Printable(text));
+            return item;
+        }
+    }
+    return nullptr;
+}
+
+bool LineAccessibleList::openPostMenu()
+{
+    QAbstractItemView *v = view();
+    const int row = cursorRow();
+    if (!v || !v->model() || row < 0 || !isPostList(v))
+        return false;
+    const QModelIndex idx = v->model()->index(row, 0, v->rootIndex());
+    v->scrollTo(idx);
+    const QRect r = v->visualRect(idx);
+    const CaptureResult cap = captureRegionText(v->viewport(), r);
+    if (cap.skipped || r.isEmpty())
+        return false;
+    QList<bool> videos;
+    const QList<QRectF> media = postMedia(cap, &videos);
+    const QString body = postBodyText(cap, r);
+    const QPointF more = postMoreButtonPoint();
+    if (media.isEmpty() && body.isEmpty() && more.isNull())
+        return false;
+    const QPersistentModelIndex keep(idx);
+    QPointer<QAbstractItemView> view(v);
+    auto *menu = new QMenu(v);
+    menu->setAttribute(Qt::WA_DeleteOnClose);
+    if (!media.isEmpty()) {
+        QObject::connect(menu->addAction(label("Open")), &QAction::triggered, v, [view, keep] {
+            if (LineAccessibleList *list = view ? listFor(view) : nullptr; list && keep.isValid()) {
+                view->setCurrentIndex(keep);
+                list->openPostMedia();
+            }
+        });
+        // LINE saves from its viewer only (Download, shown while the mouse is over the picture): open
+        // the picture and ask the viewer's bridge to press it (Windows' Save As follows).
+        QObject::connect(menu->addAction(label("Save as...")), &QAction::triggered, v, [view, keep] {
+            LineAccessibleList *list = view ? listFor(view) : nullptr;
+            if (!list || !keep.isValid())
+                return;
+            QFile request(bridgeDirectory() + QStringLiteral("viewer-save-request"));
+            if (request.open(QIODevice::WriteOnly | QIODevice::Truncate))
+                request.write(QByteArray::number(QDateTime::currentMSecsSinceEpoch()));
+            request.close();
+            view->setCurrentIndex(keep);
+            if (!list->openPostMedia())
+                QFile::remove(request.fileName());
+        });
+    }
+    if (!body.isEmpty()) {
+        QObject::connect(menu->addAction(label("Copy text")), &QAction::triggered, v, [body] {
+            QGuiApplication::clipboard()->setText(body);
+        });
+    }
+    if (!more.isNull()) {
+        QObject::connect(menu->addAction(label("More options")), &QAction::triggered, v, [view, keep, more] {
+            if (!view || !keep.isValid())
+                return;
+            const QRect rr = view->visualRect(keep);
+            const QPointF local = QPointF(rr.topLeft()) + more;
+            a11yLog("[post] more options of row %d: click at %.0f,%.0f", keep.row(), local.x(), local.y());
+            QPointer<QWidget> viewport = view->viewport();
+            QMouseEvent move(QEvent::MouseMove, local, viewport->mapTo(viewport->window(), local),
+                             viewport->mapToGlobal(local), Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+            QCoreApplication::sendEvent(viewport, &move);
+            if (viewport)
+                sendClick(viewport, local);
+        });
+    }
+    a11yLog("[post] menu for row %d (%d actions, %d pictures, text %d chars)", row, int(menu->actions().size()),
+            int(media.size()), int(body.size()));
+    menu->popup(v->viewport()->mapToGlobal(QRectF(r.intersected(v->viewport()->rect())).center().toPoint()));
+    menu->setActiveAction(menu->actions().value(0));
+    // The item under the real mouse pointer may take the highlight as the menu shows: the first again.
+    QTimer::singleShot(80, menu, [menu] { menu->setActiveAction(menu->actions().value(0)); });
+    return true;
+}
+
+bool LineAccessibleList::openContentMenu()
+{
+    QAbstractItemView *v = view();
+    if (v && isPostList(v))
+        return openPostMenu();
+    const int row = cursorRow();
+    const ContentKind kind = v ? contentKind(v) : ContentKind::Other;
+    if (!v || !v->model() || row < 0 || kind == ContentKind::Other)
+        return false;
+    const QModelIndex idx = v->model()->index(row, 0, v->rootIndex());
+    v->scrollTo(idx);
+    const QRect r = v->visualRect(idx);
+    // Month headings span the list.
+    if (r.isEmpty() || r.width() > v->viewport()->width() * 0.75)
+        return false;
+    const QPersistentModelIndex keep(idx);
+    QPointer<QAbstractItemView> view(v);
+    // The actions' clicks reset the cursor (see the event filter): it stays on the item.
+    auto restore = [view, keep] {
+        if (LineAccessibleList *list = view ? listFor(view) : nullptr; list && keep.isValid())
+            list->m_cursor = keep;
+    };
+    auto *menu = new QMenu(v);
+    menu->setAttribute(Qt::WA_DeleteOnClose);
+    QObject::connect(menu->addAction(label("Open")), &QAction::triggered, v, [view, keep, restore] {
+        if (view && keep.isValid())
+            sendClick(view->viewport(), QRectF(view->visualRect(keep)).center());
+        restore();
+    });
+    if (kind == ContentKind::Media || kind == ContentKind::File) {
+        QObject::connect(menu->addAction(label("Save")), &QAction::triggered, v, [view, keep, kind, restore] {
+            if (!view || !keep.isValid())
+                return;
+            if (kind == ContentKind::Media)
+                saveMediaItem(view, keep);
+            else
+                saveFileItem(view, keep);
+            restore();
+        });
+    }
+    if (kind == ContentKind::Link) {
+        QObject::connect(menu->addAction(label("Copy link")), &QAction::triggered, v, [view, keep, restore] {
+            if (view && keep.isValid())
+                clickHoverButton(view, keep, "copy link");
+            restore();
+        });
+        QObject::connect(menu->addAction(label("Copy text")), &QAction::triggered, v, [view, keep] {
+            LineAccessibleList *list = view ? listFor(view) : nullptr;
+            if (QAccessibleInterface *item = list && keep.isValid() ? list->itemAt(keep.row()) : nullptr)
+                QGuiApplication::clipboard()->setText(item->text(QAccessible::Name));
+        });
+    }
+    a11yLog("[content] menu for row %d (%d actions)", row, int(menu->actions().size()));
+    menu->popup(v->viewport()->mapToGlobal(QRectF(r).center().toPoint()));
+    menu->setActiveAction(menu->actions().value(0));
+    // The item under the real mouse pointer may take the highlight as the menu shows: the first again.
+    QTimer::singleShot(80, menu, [menu] { menu->setActiveAction(menu->actions().value(0)); });
     return true;
 }
 
@@ -1869,6 +3895,160 @@ bool LineAccessibleList::isRowSelected(int row) const
         return false;
     QItemSelectionModel *sm = v->selectionModel();
     return sm && sm->isRowSelected(row, v->rootIndex());
+}
+
+
+namespace {
+
+QAbstractItemView *packageList(QWidget *window, const char *modelClass, bool visibleOnly)
+{
+    for (QAbstractItemView *v : window->findChildren<QAbstractItemView *>()) {
+        if (v->model() && inheritsClass(v->model(), modelClass) && (!visibleOnly || v->isVisible())
+            && v->model()->rowCount(v->rootIndex()) > 0)
+            return v;
+    }
+    return nullptr;
+}
+
+QWidget *buttonWithIcon(QWidget *window, const char *icon)
+{
+    for (QWidget *w : window->findChildren<QWidget *>()) {
+        if (w->isVisible() && inheritsClass(w, "LcButton") && iconSource(w).contains(QLatin1StringView(icon)))
+            return w;
+    }
+    return nullptr;
+}
+
+// Tried this session to read emoji package names (there may be none: not again then).
+bool g_emojiNamesTried = false;
+// A refresh is under way.
+bool g_namesRefreshing = false;
+
+// Names known for every package of the strip? LINE loads the emoji strip only when its tab is
+// opened, so emoji names are also missing while none were read yet.
+bool packageNamesKnown(QWidget *window)
+{
+    if (packageNames(true).isEmpty() && !g_emojiNamesTried)
+        return false;
+    for (const auto &[model, emoji] : { std::pair { "StickerPackageModel", false }, std::pair { "SticonPackageModel", true } }) {
+        QAbstractItemView *strip = packageList(window, model, false);
+        if (!strip)
+            continue;
+        const QStringList &names = packageNames(emoji);
+        if (names.size() != strip->model()->rowCount(strip->rootIndex()) - 1 || names.contains(QString()))
+            return false;
+    }
+    return true;
+}
+
+// Reads every row of the "My stickers" list of stickers or emoji (both stay "visible" in their
+// stack); returns how many names it got.
+int readMyStickers(QWidget *window, bool emoji, bool quiet = false)
+{
+    QAbstractItemView *list = nullptr;
+    for (QAbstractItemView *v : window->findChildren<QAbstractItemView *>()) {
+        if (!v->isVisible() || !v->model() || !inheritsClass(v->model(), "ShopEditPackageModel")
+            || v->model()->rowCount(v->rootIndex()) == 0)
+            continue;
+        QObject *first = v->model()->index(0, 0, v->rootIndex()).data(kItemDataRole).value<QObject *>();
+        if (inheritsClass(first, emoji ? "SticonEditPackageData" : "StickerEditPackageData"))
+            list = v;
+    }
+    if (!list) {
+        if (!quiet)
+            a11yLog("[sticker] My stickers: no %s list", emoji ? "emoji" : "sticker");
+        return 0;
+    }
+    const int rows = list->model()->rowCount(list->rootIndex());
+    int read = 0;
+    for (int row = 0; row < rows; ++row) {
+        const QModelIndex idx = list->model()->index(row, 0, list->rootIndex());
+        QObject *data = idx.data(kItemDataRole).value<QObject *>();
+        list->scrollTo(idx);
+        if (const QString name = firstPaintedLine(list, idx); !name.isEmpty()) {
+            notePackageName(inheritsClass(data, "SticonEditPackageData"), row, name, rows);
+            ++read;
+        }
+    }
+    list->scrollTo(list->model()->index(0, 0, list->rootIndex()));
+    return read;
+}
+
+// The tabs of "My stickers" (stickers, emoji), left to right.
+QList<QWidget *> myStickersTabs(QWidget *window)
+{
+    QList<QWidget *> tabs;
+    QAbstractItemView *list = packageList(window, "ShopEditPackageModel", true);
+    for (QWidget *panel = list ? list->parentWidget() : nullptr; panel && panel != window; panel = panel->parentWidget()) {
+        for (QWidget *w : panel->findChildren<QWidget *>()) {
+            if (w->isVisible() && inheritsClass(w, "LcCheckBox"))
+                tabs << w;
+        }
+        if (tabs.size() >= 2)
+            break;
+        tabs.clear();
+    }
+    std::sort(tabs.begin(), tabs.end(), [window](QWidget *a, QWidget *b) {
+        return a->mapTo(window, QPoint()).x() < b->mapTo(window, QPoint()).x();
+    });
+    return tabs;
+}
+
+} // namespace
+
+void refreshStickerPackageNames(QWidget *stickerWindow)
+{
+    QPointer<QWidget> window(stickerWindow);
+    if (g_namesRefreshing || !window || !window->isVisible() || packageNamesKnown(window))
+        return;
+    QWidget *editButton = buttonWithIcon(window, "edit_icon");
+    if (!editButton)
+        return;
+    g_namesRefreshing = true;
+    g_emojiNamesTried = true;
+    const QPointer<QWidget> focus = QApplication::focusWidget();
+    a11yLog("[sticker] reading the package names from My stickers");
+    pressButtonQuietly(editButton);
+    // Each step after LINE has shown and drawn the panel.
+    QTimer::singleShot(400, window, [window, focus] {
+        int read = readMyStickers(window, false);
+        const QList<QWidget *> tabs = myStickersTabs(window);
+        a11yLog("[sticker] My stickers: %d tabs", int(tabs.size()));
+        if (tabs.size() >= 2)
+            pressButtonQuietly(tabs.at(1));
+        // LINE loads the emoji list a while after its tab is chosen: looked for every 200 ms.
+        auto finish = [window, focus, tabs](int all) {
+            if (tabs.size() >= 2 && tabs.first())
+                pressButtonQuietly(tabs.first());
+            if (QWidget *back = buttonWithIcon(window, "back_icon"))
+                pressButtonQuietly(back);
+            QTimer::singleShot(300, window, [window, focus, all] {
+                g_namesRefreshing = false;
+                if (focus && focus->isVisible())
+                    focus->setFocus(Qt::OtherFocusReason);
+                a11yLog("[sticker] %d package names read; focus back on %s", all,
+                        focus ? focus->metaObject()->className() : "nothing");
+            });
+        };
+        auto poll = std::make_shared<std::function<void(int)>>();
+        *poll = [window, read, finish, poll](int tries) {
+            if (!window)
+                return;
+            const int emoji = readMyStickers(window, true, tries > 0);
+            if (emoji > 0 || tries == 0) {
+                finish(read + emoji);
+                *poll = nullptr;
+                return;
+            }
+            QTimer::singleShot(200, window, [poll, tries] {
+                if (*poll)
+                    (*poll)(tries - 1);
+            });
+        };
+        QTimer::singleShot(200, window, [poll] { (*poll)(10); });
+    });
+    // The flag is reset by the last step; a window closed meanwhile takes its timers along.
+    QObject::connect(window, &QObject::destroyed, [] { g_namesRefreshing = false; });
 }
 
 } // namespace line_a11y

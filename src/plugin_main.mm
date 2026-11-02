@@ -6,6 +6,7 @@
 
 #include "a11y_EventFilter.h"
 #include "a11y_log.h"
+#include "focus_highlight.h"
 #include "accessible_widgets.h"
 #include "call_launch_hook.h"
 #include "line_introspect.h"
@@ -130,6 +131,7 @@ void startBridge()
 
     g_filter = new A11yEventFilter(app);
     app->installEventFilter(g_filter);
+    startFocusHighlight(app);
     g_filter->startWatchdog(kWatchdogIntervalMs);
 
     // LcApplication installs its no-op handler late in startup; catch it quickly.

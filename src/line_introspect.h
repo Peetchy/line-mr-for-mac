@@ -87,6 +87,9 @@ ChatMessageFields readChatMessageData(const QObject *data);
 // Icon resource an LcImage shows ("image://chat/chatroom-call.png"), read from this + 0x420; empty
 // for images loaded from files (photos, ads) or when unavailable.
 QString lcImageSource(const QWidget *image);
+// The icon resource of an LcButton / LcImage: its "iconSource" / "source" / "defaultSource"
+// property, else lcImageSource(); "" if it has none.
+QString iconSource(const QWidget *w);
 
 // Diagnostics: both LcTextPainter strings (full text at +0x68, display text at +0x50).
 QStringList lcTextPainterStrings(QWidget *w);
@@ -97,6 +100,9 @@ QString extractLcWidgetToolTip(QWidget *w);
 // Converts icon resource names (":/res/img/gnb_friend_add_selected@2x.png", "eye-show",
 // "refresh", ...) to human-readable accessibility names. Returns "" if nothing useful remains.
 QString humanizeIconName(const QString &iconName);
+// The arrows of a chat's search bar (both draw down-arrow.svg, the one pointing up rotated by 180
+// degrees): -1 previous (older) result, 1 next (newer) result, 0 any other widget.
+int chatSearchArrow(const QWidget *w);
 
 // Converts identifiers like "accessUrlTextField" / "btn_close" to "Access url" / "Close".
 QString humanizeIdentifier(const QString &identifier);

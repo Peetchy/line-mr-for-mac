@@ -46,6 +46,10 @@ void setMenuRetry(std::function<void()> retry);
 // How many context menus LINE has shown so far.
 int contextMenusShown();
 
+// A photo / video was opened from `window` (Notes): when LINE comes back from its media viewer, that
+// window is activated again (LINE activates its main window).
+void noteMediaOpenedFrom(QWidget *window);
+
 class A11yEventFilter : public QObject
 {
 public:
@@ -68,7 +72,8 @@ public:
 
 private:
     bool handleKeyPress(QWidget *w, QKeyEvent *key);
-    // Option+Command commands (the Windows add-on's Alt keys). True if `key` was one.
+    // The bridge's Control commands (the Windows add-on's Alt keys; Option+Command too). True if `key`
+    // was one. `w` may be null (keys in Qt Quick windows).
     bool handleCommandKey(QWidget *w, QKeyEvent *key);
     bool handleMenuKey(QWidget *menu, const QKeyEvent *key);
     void handleShow(QWidget *w);

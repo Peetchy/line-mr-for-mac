@@ -1,13 +1,16 @@
 // ax_inspect: dump the live AXUIElement tree of LINE.app and optionally press an element.
 //
 // Usage:
-//   ax_inspect [--pid PID] [--bundle-id ID] [--depth N] [--wait SECONDS] [--press TITLE [--nth N] [--prefix]]
+//   ax_inspect [--pid PID] [--bundle-id ID] [--depth N] [--wait SECONDS] [--press TITLE [--nth N] [--prefix]
+//              [--action AXShowMenu]] [--focused]
 //
 // Each element is printed on one line:
 //   <indent>role=AXButton subrole=- title="Log in" desc="" val="" actions=[AXPress]
 // The AXMenuBar subtree is skipped. --press performs kAXPressAction on the first element whose
 // title, description or value equals TITLE (or the N-th such element, 1-based, with --nth) and
 // exits 0 on success. With --prefix, TITLE only has to be a prefix of the title, description or value.
+// --action performs another action instead (AXShowMenu is VoiceOver's VO+Shift+M; AXFocus sets AXFocused). --focused prints
+// the application's focused element (what VoiceOver reads after a key) instead of the tree.
 
 import AppKit
 import ApplicationServices
@@ -21,7 +24,10 @@ struct Options {
     var pressTitle: String?
     var pressNth = 1
     var pressPrefix = false
+    var action = kAXPressAction as String
     var navigationOrder = false
+    var focused = false
+    var setValue: String?
 }
 
 func fail(_ message: String, code: Int32 = 1) -> Never {
@@ -53,9 +59,12 @@ func parseOptions() -> Options {
             guard let n = Int(value()), n >= 1 else { fail("--nth expects a number >= 1", code: 64) }
             opts.pressNth = n
         case "--prefix": opts.pressPrefix = true
+        case "--action": opts.action = value()
+        case "--focused": opts.focused = true
+        case "--set-value": opts.setValue = value()
         case "--nav": opts.navigationOrder = true
         case "-h", "--help":
-            print("usage: ax_inspect [--pid PID] [--bundle-id ID] [--depth N] [--wait SECONDS] [--press TITLE [--nth N] [--prefix]] [--nav]")
+            print("usage: ax_inspect [--pid PID] [--bundle-id ID] [--depth N] [--wait SECONDS] [--press TITLE [--nth N] [--prefix] [--action NAME]] [--focused] [--nav]")
             exit(0)
         default: fail("unknown argument: \(arg)", code: 64)
         }
@@ -212,12 +221,28 @@ if let target = opts.pressTitle {
         return true
     }
     guard let n = found else { fail("error: no element titled \(quoted(target))", code: 4) }
-    let result = AXUIElementPerformAction(n.element, kAXPressAction as CFString)
+    // --action AXFocus: give the element keyboard focus (sets AXFocused) instead of performing an action.
+    // --set-value TEXT: types TEXT into the element (sets AXValue), whatever the keyboard layout.
+    if let text = opts.setValue {
+        let r = AXUIElementSetAttributeValue(n.element, kAXValueAttribute as CFString, text as CFString)
+        if r == .success { print("set value of \(quoted(n.title))"); exit(0) }
+        fail("error: setting the value failed with AXError \(r.rawValue)", code: 5)
+    }
+    let result = opts.action == "AXFocus"
+        ? AXUIElementSetAttributeValue(n.element, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+        : AXUIElementPerformAction(n.element, opts.action as CFString)
     if result == .success {
-        print("pressed role=\(n.role) title=\(quoted(n.title)) desc=\(quoted(n.desc))")
+        print("\(opts.action) role=\(n.role) title=\(quoted(n.title)) desc=\(quoted(n.desc)) val=\(quoted(n.val, limit: 80))")
         exit(0)
     }
-    fail("error: AXPress on \(quoted(target)) failed with AXError \(result.rawValue)", code: 5)
+    fail("error: \(opts.action) on \(quoted(target)) failed with AXError \(result.rawValue)", code: 5)
+}
+
+if opts.focused {
+    guard let element = attribute(app, kAXFocusedUIElementAttribute as String) else { fail("no focused element", code: 4) }
+    let n = node(element as! AXUIElement)
+    print("focused role=\(n.role) title=\(quoted(n.title)) desc=\(quoted(n.desc)) val=\(quoted(n.val))")
+    exit(0)
 }
 
 // --nav: each window's children in VoiceOver's reading order (AXChildrenInNavigationOrder).

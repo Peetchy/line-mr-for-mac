@@ -9,26 +9,37 @@
 #include "a11y_update_filter.h"
 #include "qt_signal_utils.h"
 #include "text_capture.h"
+#include "video_controls.h"
 
 #include <QtCore/QCoreApplication>
+#include <QtCore/QHash>
+#include <QtCore/QLineF>
 #include <QtCore/QMetaMethod>
 #include <QtCore/QMetaProperty>
 #include <QtCore/QPointer>
+#include <QtCore/QRegularExpression>
 #include <QtCore/QSet>
 #include <QtCore/QTimer>
 #include <QtCore/QVariant>
 #include <QtGui/QEnterEvent>
 #include <QtGui/QFontMetrics>
 #include <QtGui/QMouseEvent>
+#include <QtGui/QTextBlock>
 #include <QtGui/QTextCursor>
 #include <QtGui/QTextDocument>
 #include <QtWidgets/QAbstractButton>
+#include <QtGui/QTextLayout>
+#include <QtGui/QTextObject>
+#include <QtGui/QTextDocumentFragment>
 #include <QtWidgets/QAbstractItemView>
+#include <QtWidgets/QApplication>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QLineEdit>
+#include <QtWidgets/QMenu>
 #include <QtWidgets/QTextEdit>
 #include <QtWidgets/QWidget>
 
+#include <algorithm>
 #include <typeinfo>
 
 namespace line_a11y {
@@ -68,10 +79,279 @@ QString explicitAccessibleDescription(const QWidget *w)
 
 bool isClickableImage(const QWidget *w);
 
+} // namespace
+
+// Set on the sticker or emoji a first press selected (the next press sends it).
+constexpr char kStickerChosenProperty[] = "_lineA11yStickerChosen";
+
+QWidget *stickerPreview(QWidget *sticker);
+
+// A sticker or emoji in the sticker window's grid: clickable LcImages with cacheCategory "sticker"
+// (emoji: another category) and nothing else that names them. Numbered in reading order.
+QString stickerName(const QWidget *w)
+{
+    // Square pictures in the scrolled grid; the banner ("Download all stickers", 162x47) is an LcImage
+    // of the same category.
+    if (!inheritsClass(w, "LcImage") || !inheritsClass(w->window(), "StickerWindow") || !w->parentWidget()
+        || !ancestorInheriting(w, "LcScrollArea") || w->width() < 24 || qAbs(w->width() - w->height()) > 8)
+        return QString();
+    const QString category = w->property("cacheCategory").toString();
+    if (category.isEmpty())
+        return QString();
+    QList<const QWidget *> items;
+    for (const QWidget *other : w->parentWidget()->findChildren<QWidget *>(Qt::FindDirectChildrenOnly)) {
+        if (other->isVisible() && inheritsClass(other, "LcImage") && other->property("cacheCategory").toString() == category)
+            items << other;
+    }
+    std::sort(items.begin(), items.end(), [](const QWidget *a, const QWidget *b) {
+        return a->y() != b->y() ? a->y() < b->y() : a->x() < b->x();
+    });
+    const qsizetype index = items.indexOf(w);
+    if (index < 0)
+        return QString();
+    QString name = label(category == QLatin1StringView("sticker") ? "Sticker %1" : "Emoji %1").arg(index + 1);
+    // The first press selects and previews, the second sends (user request).
+    if (w->property(kStickerChosenProperty).toBool())
+        name = label("%1, selected, press again to send").arg(name);
+    return name;
+}
+
+// A colour swatch: an LcButton without icon or text holding one round LcImage of its size, among
+// at least eight alike (text profile editor, "สร้างโปรไฟล์ข้อความ"). Nothing names the colour, so
+// it is read from the picture.
+bool isColorSwatch(const QWidget *w)
+{
+    const auto plain = [](const QWidget *b) {
+        if (!inheritsClass(b, "LcButton") || !iconSource(b).isEmpty() || !stringProp(b, "text").isEmpty()
+            || b->width() < 20 || b->width() > 48 || qAbs(b->width() - b->height()) > 4)
+            return false;
+        const QList<QWidget *> children = b->findChildren<QWidget *>(Qt::FindDirectChildrenOnly);
+        return children.size() == 1 && inheritsClass(children.first(), "LcImage")
+            && qAbs(children.first()->width() - b->width()) <= 4;
+    };
+    if (!plain(w) || !w->parentWidget())
+        return false;
+    int alike = 0;
+    for (const QWidget *other : w->parentWidget()->findChildren<QWidget *>(Qt::FindDirectChildrenOnly))
+        alike += !other->isHidden() && plain(other);
+    return alike >= 8;
+}
+
+QString colorName(const QColor &c)
+{
+    const float l = c.lightnessF();
+    const int chroma = qMax(c.red(), qMax(c.green(), c.blue())) - qMin(c.red(), qMin(c.green(), c.blue()));
+    const int h = c.hslHue();
+    if (chroma < 24 || h < 0) {
+        if (l > 0.93f)
+            return label("White");
+        if (l > 0.7f)
+            return label("Light grey");
+        if (l > 0.4f)
+            return label("Grey");
+        if (l > 0.15f)
+            return label("Dark grey");
+        return label("Black");
+    }
+    const char *hue;
+    if (h < 15 || h >= 345)
+        hue = "Red";
+    else if (h < 42)
+        hue = l < 0.4f ? "Brown" : "Orange";
+    else if (h < 70)
+        hue = l < 0.35f ? "Brown" : "Yellow";
+    else if (h < 165)
+        hue = "Green";
+    else if (h < 195)
+        hue = "Teal";
+    else if (h < 250)
+        hue = l < 0.3f ? "Navy" : "Blue";
+    else if (h < 290)
+        hue = "Purple";
+    else
+        hue = "Pink";
+    const QString name = label(hue);
+    if (qstrcmp(hue, "Brown") == 0 || qstrcmp(hue, "Navy") == 0)
+        return name;
+    if (l > 0.78f)
+        return label("Light %1").arg(name);
+    if (l < 0.3f)
+        return label("Dark %1").arg(name);
+    return name;
+}
+
+// "Color 3: Grey"; `chosen` tells whether LINE draws the chosen colour's mark over it (a second
+// colour covering part of the disc: the tick).
+QString colorSwatchName(const QWidget *w, bool *chosen = nullptr)
+{
+    if (!isColorSwatch(w))
+        return QString();
+    QWidget *picture = w->findChildren<QWidget *>(Qt::FindDirectChildrenOnly).first();
+    QList<const QWidget *> items;
+    for (const QWidget *other : w->parentWidget()->findChildren<QWidget *>(Qt::FindDirectChildrenOnly)) {
+        if (other->isVisible() && isColorSwatch(other))
+            items << other;
+    }
+    std::sort(items.begin(), items.end(), [](const QWidget *a, const QWidget *b) {
+        return a->y() != b->y() ? a->y() < b->y() : a->x() < b->x();
+    });
+    const QString number = QString::number(items.indexOf(w) + 1);
+    if (picture->paintingActive())
+        return label("Color %1: %2").arg(number, QString()).section(u':', 0, 0);
+    const QImage image = picture->grab().toImage().convertToFormat(QImage::Format_ARGB32);
+    // Count colours (quantised) inside the disc, away from its border.
+    QHash<QRgb, int> counts;
+    const QPointF centre(image.width() / 2.0, image.height() / 2.0);
+    const qreal radius = qMin(image.width(), image.height()) * 0.4;
+    int total = 0;
+    for (int y = 0; y < image.height(); ++y) {
+        for (int x = 0; x < image.width(); ++x) {
+            if (QLineF(centre, QPointF(x + 0.5, y + 0.5)).length() > radius)
+                continue;
+            const QRgb p = image.pixel(x, y);
+            if (qAlpha(p) < 200)
+                continue;
+            ++counts[qRgb(qRed(p) & 0xf0, qGreen(p) & 0xf0, qBlue(p) & 0xf0)];
+            ++total;
+        }
+    }
+    if (!total)
+        return label("Color %1: %2").arg(number, QString()).section(u':', 0, 0);
+    QRgb main = 0;
+    int best = 0;
+    for (auto it = counts.cbegin(); it != counts.cend(); ++it) {
+        if (it.value() > best) {
+            best = it.value();
+            main = it.key();
+        }
+    }
+    // The average of the pixels near the main colour gives the real shade.
+    long r = 0, g = 0, b = 0, n = 0;
+    for (int y = 0; y < image.height(); ++y) {
+        for (int x = 0; x < image.width(); ++x) {
+            const QRgb p = image.pixel(x, y);
+            if (qAlpha(p) >= 200 && qRgb(qRed(p) & 0xf0, qGreen(p) & 0xf0, qBlue(p) & 0xf0) == main) {
+                r += qRed(p);
+                g += qGreen(p);
+                b += qBlue(p);
+                ++n;
+            }
+        }
+    }
+    // The chosen colour is drawn at 80 % brightness with a tick over about a tenth of the disc.
+    const bool marked = best < total * 0.95;
+    if (chosen)
+        *chosen = marked;
+    const qreal undo = marked ? 1 / 0.8 : 1;
+    const QColor colour(qMin(255, qRound(r / n * undo)), qMin(255, qRound(g / n * undo)), qMin(255, qRound(b / n * undo)));
+    QString name = label("Color %1: %2").arg(number, colorName(colour));
+    static QSet<QString> logged;
+    const QString key = colour.name() + (marked ? QStringLiteral("+") : QString());
+    if (logged.size() < 64 && !logged.contains(key)) {
+        logged.insert(key);
+        a11yLog("[swatch] %s %s main %d of %d px", qPrintable(number), qPrintable(key), best, total);
+    }
+    return name;
+}
+
+// The text profile editor's choices: the colour swatches and the Text color / Background color
+// switch (LcButtons "font_color_*" / "bgcolor_*", the chosen one "*_select"). Checkable, so NVDA
+// says which one is chosen.
+bool isColorChoice(const QWidget *w)
+{
+    if (isColorSwatch(w))
+        return true;
+    const QString source = iconSource(w);
+    return inheritsClass(w->window(), "CustomProfileEditorWindow")
+        && (source.contains(QLatin1StringView("font_color")) || source.contains(QLatin1StringView("bgcolor")));
+}
+
+bool colorChoiceChosen(const QWidget *w)
+{
+    if (iconSource(w).contains(QLatin1StringView("_select.")))
+        return true;
+    bool chosen = false;
+    colorSwatchName(w, &chosen);
+    return chosen;
+}
+
+// The larger copy LINE lays over the sticker the mouse is on (sticker window, AnimatedSticker).
+QWidget *stickerPreview(QWidget *sticker)
+{
+    const QPoint centre = sticker->mapToGlobal(sticker->rect().center());
+    for (QWidget *w : sticker->window()->findChildren<QWidget *>()) {
+        if (w != sticker && w->isVisible() && inheritsClass(w, "AnimatedSticker")
+            && QRect(w->mapToGlobal(QPoint()), w->size()).contains(centre))
+            return w;
+    }
+    return nullptr;
+}
+
+namespace {
+
+// After a sticker was sent: hide the sticker window and focus the message input of the chat it
+// belongs to (its parent window, else the visible chat).
+void closeStickerWindow(QWidget *stickerWindow)
+{
+    QWidget *chat = stickerWindow && stickerWindow->parentWidget() ? stickerWindow->parentWidget()->window() : nullptr;
+    if (stickerWindow && stickerWindow->isVisible())
+        stickerWindow->hide();
+    QWidget *input = nullptr;
+    const QWidgetList windows = chat ? QWidgetList { chat } : QApplication::topLevelWidgets();
+    for (QWidget *window : windows) {
+        if (!window->isVisible())
+            continue;
+        for (QWidget *candidate : window->findChildren<QWidget *>()) {
+            if (candidate->isVisible() && isMessageInput(candidate)) {
+                input = candidate;
+                break;
+            }
+        }
+        if (input)
+            break;
+    }
+    if (!input)
+        return;
+    input->window()->activateWindow();
+    input->setFocus(Qt::OtherFocusReason);
+    a11yLog("[keyboard] sticker sent: focus back to the message input");
+}
+
+// The arrow beside the chat list's search field (open-bt.svg) shows or hides the open chat on the
+// right (the window narrows to the list); it was named "Show or hide chat list". With the state.
+bool isChatRoomToggle(const QWidget *w)
+{
+    if (iconSource(w).contains(QLatin1StringView("open-bt")))
+        return true;
+    for (const QWidget *child : w->findChildren<QWidget *>(Qt::FindDirectChildrenOnly)) {
+        if (!child->isHidden() && iconSource(child).contains(QLatin1StringView("open-bt")))
+            return true;
+    }
+    return false;
+}
+
+QString chatRoomToggleName(const QWidget *w)
+{
+    bool shown = false;
+    for (const QWidget *panel : w->window()->findChildren<QWidget *>()) {
+        if (inheritsClass(panel, "ChatMessagePanel") && panel->isVisible() && panel->width() > 0)
+            shown = true;
+    }
+    return label(shown ? "Show or hide chat room, chat room shown" : "Show or hide chat room, chat room hidden");
+}
+
 // From the icon's resource name, or, for a clickable LcImage drawn from a pixmap without a known
 // source (the call button in the chat header), from which known icon it paints.
 QString iconDerivedName(const QWidget *w)
 {
+    if (QString sticker = stickerName(w); !sticker.isEmpty())
+        return sticker;
+    if (QString swatch = colorSwatchName(w); !swatch.isEmpty())
+        return swatch;
+    if (isChatRoomToggle(w))
+        return chatRoomToggleName(w);
+    if (const int arrow = chatSearchArrow(w); arrow != 0)
+        return label(arrow < 0 ? "Previous result" : "Next result");
     for (const char *prop : { "iconSource", "source", "icon", "imageSource", "image", "defaultSource" }) {
         const QString path = stringProp(w, prop);
         if (!path.isEmpty()) {
@@ -204,7 +484,10 @@ QString placeholderOf(QWidget *w)
     if (const QString known = w->property(kHintProperty).toString(); !known.isEmpty())
         return known;
     if (inputIsEmpty(w)) {
-        const QString hint = paintedText(w);
+        QString hint = paintedText(w);
+        // A text area (Create OpenChat's keywords) draws its hint on the viewport.
+        if (auto *area = qobject_cast<QAbstractScrollArea *>(w); hint.isEmpty() && area && area->viewport())
+            hint = paintedText(area->viewport());
         if (!hint.isEmpty() && hint != w->property(kHintProperty).toString())
             w->setProperty(kHintProperty, hint);
         if (!hint.isEmpty())
@@ -236,9 +519,8 @@ WidgetKind classifyWidget(const QWidget *w)
         return WidgetKind::Input;
     if (isLineListView(w))
         return WidgetKind::List;
-    // The main window and chat windows already carry a useful title.
-    if (w->isWindow() && inheritsClass(w, "LcWindow")
-        && !inheritsAnyClass(w, { "AllInOneWindow", "ChatWindow", "LcContextMenu" }))
+    // LINE's windows (the main window and chat windows keep their own title; see LineAccessibleWindow).
+    if (w->isWindow() && inheritsClass(w, "LcWindow") && !inheritsClass(w, "LcContextMenu"))
         return WidgetKind::Window;
     if (inheritsAnyClass(w, { "LcContextMenu", "LcContextMenuItem", "LcCheckableContextMenuItem",
                               "LcCheckboxContextMenuItem", "LcContextMenuSeperator" }))
@@ -246,7 +528,9 @@ WidgetKind classifyWidget(const QWidget *w)
     if (inheritsClass(w, "LcListDelegateWidget")
         || (inheritsClass(w, "LcWidget") && QLatin1StringView(w->metaObject()->className()).endsWith(QLatin1StringView("DelegateWidget"))))
         return WidgetKind::Delegate;
-    if (inheritsAnyClass(w, { "LcButton", "LcIconTextButton", "LcRadioButton", "LcCheckBox" }) || isClickableImage(w)) {
+    // The reaction picker's faces have no clicked() (a mouse click chooses them): the bridge marks them.
+    if (inheritsAnyClass(w, { "LcButton", "LcIconTextButton", "LcRadioButton", "LcCheckBox" }) || isClickableImage(w)
+        || w->property("_lineA11yReaction").isValid()) {
         // A frame drawn as a button around a list (Settings > Chats: translation languages) is a
         // container: a button would hide the list from VoiceOver.
         if (w->findChild<QAbstractItemView *>())
@@ -272,6 +556,11 @@ QAccessibleInterface *lineAccessibleFactory(const QString &key, QObject *object)
     auto *w = static_cast<QWidget *>(object);
     if (QAccessibleInterface *iface = fullTextAccessible(w))
         return iface;
+    if (QAccessibleInterface *iface = extraMenuItemAccessible(w))
+        return iface;
+    // The photo / video viewer's player (a QQuickWidget, see LineAccessibleQuickWidget).
+    if (inheritsClass(w, "QQuickWidget") && inheritsClass(w->window(), "MediaViewerWindow"))
+        return new LineAccessibleQuickWidget(w);
     const WidgetKind kind = classifyWidget(w);
     if (kind != WidgetKind::None) {
         static QSet<QByteArray> loggedClasses;
@@ -368,6 +657,15 @@ void sendMouseClick(QWidget *w)
         QCoreApplication::sendEvent(guard, &release);
 }
 
+bool pressButtonQuietly(QWidget *w)
+{
+    auto *button = dynamic_cast<LineAccessibleButton *>(QAccessible::queryAccessibleInterface(w));
+    if (!button)
+        return false;
+    button->pressQuietly();
+    return true;
+}
+
 void synthesizeClick(QWidget *w)
 {
     if (!w)
@@ -416,13 +714,19 @@ bool isLineInputWidget(const QWidget *w)
 
 bool isMessageInput(const QWidget *w)
 {
-    if (!qobject_cast<const QTextEdit *>(w) || !isLineInputWidget(w))
+    // (The chat's AI search panel has a text area of its own.)
+    if (!qobject_cast<const QTextEdit *>(w) || !isLineInputWidget(w) || ancestorInheriting(w, "ChatAISearchPanel"))
         return false;
     return inheritsClass(w, "ChatDetailInputTextEdit") || ancestorInheriting(w, "ChatMessageInputPanel")
         || ancestorInheriting(w, "ChatMessagePanel") || ancestorInheriting(w, "MessageInputPanel");
 }
 
-QString chatNameFor(const QWidget *w)
+namespace {
+
+// The visible LcTexts in the header of the ChatMessagePanel `w` belongs to (the strip with the
+// chatroom-* buttons): the chat's name, then the member count of a group ("(5)"). `w` may sit
+// outside the panel (the message input).
+QStringList chatHeaderTexts(const QWidget *w)
 {
     QWidget *panel = ancestorInheriting(w, "ChatMessagePanel");
     if (!panel) {
@@ -433,23 +737,109 @@ QString chatNameFor(const QWidget *w)
             }
         }
     }
+    QStringList texts;
     if (!panel)
-        return QString();
+        return texts;
     for (QObject *child : panel->children()) {
         if (!child->isWidgetType() || !static_cast<QWidget *>(child)->isVisible())
             continue;
-        // The header (the strip with the chatroom-* buttons) is the first visible child.
+        // The header is the first visible child.
         for (QObject *item : child->children()) {
             auto *text = qobject_cast<QWidget *>(item);
-            if (text && text->isVisible() && inheritsClass(text, "LcText")) {
-                if (const QString name = extractLcTextString(text); !name.isEmpty())
-                    return name;
-            }
+            if (text && text->isVisible() && inheritsClass(text, "LcText"))
+                if (const QString t = extractLcTextString(text); !t.isEmpty())
+                    texts << t;
         }
         break;
     }
+    return texts;
+}
+
+} // namespace
+
+// Name of the chat `input` writes to: the first LcText in the ChatMessagePanel's header.
+QString chatNameFor(const QWidget *input)
+{
+    return chatHeaderTexts(input).value(0);
+}
+
+namespace {
+
+const QRegularExpression &memberCountPattern()
+{
+    // Unicode digits: LINE in Thai writes "(๑,๐๖๖)".
+    static const QRegularExpression count(QStringLiteral("^\\(\\s*([\\d,.]+)\\s*\\)$"),
+                                          QRegularExpression::UseUnicodePropertiesOption);
+    return count;
+}
+
+// Is `w` an LcText in the chat header strip (a child of the ChatMessagePanel's first visible child)?
+bool isChatHeaderText(const QWidget *w)
+{
+    if (!inheritsClass(w, "LcText"))
+        return false;
+    const QWidget *strip = w->parentWidget();
+    const QWidget *panel = strip ? strip->parentWidget() : nullptr;
+    if (!panel || !inheritsClass(panel, "ChatMessagePanel"))
+        return false;
+    for (QObject *child : panel->children()) {
+        if (child->isWidgetType() && static_cast<QWidget *>(child)->isVisible())
+            return child == strip;
+    }
+    return false;
+}
+
+} // namespace
+
+// A group or OpenChat shows its member count beside the name; a one-to-one chat shows none.
+bool chatHasMemberCount(const QWidget *w)
+{
+    const QStringList texts = chatHeaderTexts(w);
+    return std::any_of(texts.cbegin() + qMin<qsizetype>(1, texts.size()), texts.cend(),
+                       [](const QString &t) { return memberCountPattern().match(t).hasMatch(); });
+}
+
+bool openChatHeader(const QWidget *w, QString *name, int *members)
+{
+    const QStringList texts = chatHeaderTexts(w);
+    *name = cleanText(texts.value(0));
+    *members = -1;
+    for (qsizetype i = 1; i < texts.size(); ++i) {
+        if (const auto match = memberCountPattern().match(texts.at(i)); match.hasMatch()) {
+            // Thai LINE writes Thai digits ("(๑,๐๖๖)").
+            int n = 0;
+            for (const QChar c : match.captured(1)) {
+                if (c.digitValue() >= 0)
+                    n = n * 10 + c.digitValue();
+            }
+            *members = n;
+            break;
+        }
+    }
+    return !name->isEmpty();
+}
+
+bool isChatHeaderMemberCount(const QWidget *w)
+{
+    if (!w->isVisible() || !isChatHeaderText(w) || !memberCountPattern().match(extractLcTextString(const_cast<QWidget *>(w))).hasMatch())
+        return false;
+    return chatHeaderTexts(w).size() > 1;
+}
+
+QString chatNameWithMemberCount(const QWidget *w, const QString &name)
+{
+    if (!isChatHeaderText(w))
+        return QString();
+    const QStringList texts = chatHeaderTexts(w);
+    if (texts.value(0) != name)
+        return QString();
+    for (qsizetype i = 1; i < texts.size(); ++i) {
+        if (const auto match = memberCountPattern().match(texts.at(i)); match.hasMatch())
+            return name + QStringLiteral(", ") + label("%1 members").arg(match.captured(1));
+    }
     return QString();
 }
+
 
 QString inputAccessibleName(QWidget *w)
 {
@@ -461,6 +851,9 @@ QString inputAccessibleName(QWidget *w)
         if (const QString chat = chatNameFor(w); !chat.isEmpty())
             return label("Message to %1").arg(chat);
     }
+    // Create OpenChat's second page: LINE fills in the LINE name, so there is no hint to read.
+    if (ancestorInheriting(w, "SquarePrivateSettingPanel"))
+        return label("Your nickname in this OpenChat");
     if (const QString placeholder = placeholderOf(w); !placeholder.isEmpty())
         return placeholder;
     if (const QString heuristic = heuristicInputLabel(w); !heuristic.isEmpty())
@@ -482,6 +875,29 @@ QString inputAccessibleName(QWidget *w)
     return qobject_cast<QTextEdit *>(w) ? label("Text area") : label("Text field");
 }
 
+// An explanation LINE draws right under a field's frame (Create OpenChat: "กำหนดชื่อเล่นและรูปโปรไฟล์...").
+QString explanationBelow(QWidget *w)
+{
+    QWidget *frame = w->parentWidget();
+    QWidget *panel = frame ? frame->parentWidget() : nullptr;
+    if (!panel)
+        return QString();
+    const QRect field = frame->geometry();
+    for (QObject *child : panel->children()) {
+        if (!child->isWidgetType() || !inheritsClass(child, "LcText"))
+            continue;
+        auto *text = static_cast<QWidget *>(child);
+        const QRect r = text->geometry();
+        if (text->isHidden() || r.top() < field.bottom() || r.top() > field.bottom() + 20
+            || r.right() < field.left() || r.left() > field.right())
+            continue;
+        // Counters ("0 / 20") and short errors are not explanations.
+        if (const QString s = extractLcTextString(text); s.size() >= 20)
+            return s;
+    }
+    return QString();
+}
+
 QString inputAccessibleDescription(QWidget *w)
 {
     if (!w)
@@ -495,8 +911,11 @@ QString inputAccessibleDescription(QWidget *w)
     const QString placeholder = placeholderOf(w);
     if (!placeholder.isEmpty() && placeholder != name)
         return placeholder;
-    const QString tip = extractLcWidgetToolTip(w);
-    return tip != name ? tip : QString();
+    if (const QString tip = extractLcWidgetToolTip(w); !tip.isEmpty() && tip != name)
+        return tip;
+    if (const QString below = explanationBelow(w); below != name)
+        return below;
+    return QString();
 }
 
 void ensureInputLabel(QWidget *w)
@@ -644,6 +1063,10 @@ static QString overlappingBadge(const QWidget *w)
 
 QAccessible::Role LineAccessibleButton::roleFor(const QWidget *w)
 {
+    // Check boxes, not radio buttons: Qt 6.6's UIA raises a toggle state change only for check
+    // boxes, so NVDA would not say that Space chose the colour.
+    if (isColorChoice(w))
+        return QAccessible::CheckBox;
     if (inheritsClass(w, "LcCheckBox"))
         return inRadioGroup(w) ? QAccessible::RadioButton : QAccessible::CheckBox;
     if (inheritsClass(w, "LcRadioButton"))
@@ -662,6 +1085,8 @@ bool LineAccessibleButton::isCheckable() const
 
 bool LineAccessibleButton::isChecked() const
 {
+    if (isColorChoice(widget()))
+        return colorChoiceChosen(widget());
     return firstTrueBoolProp(widget(), { "checked", "isChecked", "selected" });
 }
 
@@ -795,7 +1220,7 @@ QString LineAccessibleButton::computeName() const
         return text;
     if (QString children = collectVisibleChildTexts(w, QStringLiteral(" ")); !children.isEmpty())
         return children;
-    if (isCheckable()) {
+    if (isCheckable() && !isColorChoice(w)) {
         if (QString label = nearbyLabelText(w); !label.isEmpty())
             return label;
     }
@@ -856,13 +1281,150 @@ QString LineAccessibleButton::computeName() const
     return paintedText(w);
 }
 
+namespace {
+
+void notifyNameChanged(QWidget *w)
+{
+    if (QAccessibleInterface *iface = QAccessible::queryAccessibleInterface(w)) {
+        QAccessibleEvent changed(iface, QAccessible::NameChanged);
+        QAccessible::updateAccessibility(&changed);
+    }
+}
+
+// Eats mouse presses and releases (counted) while installed.
+class SwallowMouseButtons final : public QObject {
+public:
+    int swallowed = 0;
+
+protected:
+    bool eventFilter(QObject *, QEvent *event) override
+    {
+        switch (event->type()) {
+        case QEvent::MouseButtonPress:
+        case QEvent::MouseButtonRelease:
+        case QEvent::MouseButtonDblClick:
+            ++swallowed;
+            return true;
+        default:
+            return false;
+        }
+    }
+};
+
+// First press on a sticker or emoji: it becomes the selected one (the others are no longer), LINE
+// is shown the mouse over it, and the sound button of the preview LINE then shows is clicked (a
+// sound sticker plays). Never sends.
+void selectSticker(QWidget *w)
+{
+    for (QWidget *other : w->window()->findChildren<QWidget *>()) {
+        if (other != w && other->property(kStickerChosenProperty).toBool()) {
+            other->setProperty(kStickerChosenProperty, false);
+            notifyNameChanged(other);
+        }
+    }
+    w->setProperty(kStickerChosenProperty, true);
+    const QPointF local = QRectF(w->rect()).center();
+    const QPointF scene = w->mapTo(w->window(), local);
+    const QPointF global = w->mapToGlobal(local);
+    w->setAttribute(Qt::WA_UnderMouse, true);
+    QEnterEvent enter(local, scene, global);
+    QCoreApplication::sendEvent(w, &enter);
+    QMouseEvent move(QEvent::MouseMove, local, scene, global, Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(w, &move);
+    QPointer<QWidget> guard(w);
+    QTimer::singleShot(200, w, [guard] {
+        if (!guard)
+            return;
+        // LINE's own preview: while the mouse is over a sticker it hides it and lays a larger copy
+        // (AnimatedSticker) over it, with a button at its corner. A click on the copy sends the
+        // sticker, so the copy is no Tab stop and never gets a click.
+        QString how = QStringLiteral("no preview");
+        if (QWidget *preview = stickerPreview(guard)) {
+            preview->setFocusPolicy(Qt::NoFocus);
+            for (QWidget *child : preview->findChildren<QWidget *>())
+                child->setFocusPolicy(Qt::NoFocus);
+            how = QStringLiteral("preview, no button");
+            for (QWidget *button : preview->findChildren<QWidget *>(Qt::FindDirectChildrenOnly)) {
+                if (!button->isVisible() || !inheritsClass(button, "LcImage") || button->width() > 32)
+                    continue;
+                // Its icon (a child: sound_type_icon.svg, ...) says what a click does: plays the sound,
+                // or opens the text editor of a message sticker (never pressed).
+                QString type;
+                for (QWidget *icon : button->findChildren<QWidget *>(Qt::FindDirectChildrenOnly)) {
+                    if (icon->isVisible() && type.isEmpty())
+                        type = paintedIcon(icon);
+                }
+                if (type.isEmpty())
+                    type = paintedIcon(button);
+                if (!type.contains(QLatin1StringView("sound"))) {
+                    how = QStringLiteral("preview, button \"%1\" not pressed").arg(type);
+                    break;
+                }
+                // The button leaves the press and release to the copy, and a click on the copy sends the
+                // sticker: the copy ignores them meanwhile.
+                SwallowMouseButtons swallow;
+                preview->installEventFilter(&swallow);
+                sendMouseClick(button);
+                preview->removeEventFilter(&swallow);
+                how = QStringLiteral("preview, sound button \"%1\" clicked (%2 events kept from the copy)").arg(type).arg(swallow.swallowed);
+                break;
+            }
+        }
+        // Focus stays on the sticker (Qt moved it to the copy).
+        if (QApplication::focusWidget() != guard.data())
+            guard->setFocus(Qt::OtherFocusReason);
+        a11yLog("[sticker] selected \"%s\" (%s)", qUtf8Printable(stickerName(guard)), qPrintable(how));
+        notifyNameChanged(guard);
+    });
+}
+
+} // namespace
+
 void LineAccessibleButton::press()
 {
     markUserActivity();
     QWidget *w = widget();
+    QPointer<QWidget> guard(w);
+    // The text profile editor's colours: LINE redraws the mark of the chosen one.
+    if (isColorChoice(w)) {
+        QTimer::singleShot(400, w, [guard] {
+            if (!guard)
+                return;
+            if (QAccessibleInterface *iface = QAccessible::queryAccessibleInterface(guard)) {
+                QAccessible::State changed;
+                changed.checked = true;
+                QAccessibleStateChangeEvent event(iface, changed);
+                QAccessible::updateAccessibility(&event);
+            }
+        });
+    }
+    // "Show or hide chat room" says whether the chat room is shown.
+    if (isChatRoomToggle(w))
+        QTimer::singleShot(400, w, [guard] {
+            if (guard)
+                notifyNameChanged(guard);
+        });
+    // A face of LINE's reaction picker (opened by the message menu's "React"): a mouse click chooses it.
+    if (w->property("_lineA11yReaction").isValid()) {
+        a11yLog("[reaction] chose \"%s\" (accessible press)", qUtf8Printable(w->accessibleName()));
+        QMetaObject::invokeMethod(w, [guard] {
+            if (guard && guard->isVisible())
+                sendMouseClick(guard);
+        }, Qt::QueuedConnection);
+        return;
+    }
     if (inheritsClass(w, "LcImage")) {
+        // The first press on a sticker selects and previews it (a sound sticker plays); the second
+        // sends it, then the sticker window closes and focus goes back to the message input.
+        const bool sticker = !stickerName(w).isEmpty();
+        if (sticker && !w->property(kStickerChosenProperty).toBool()) {
+            selectSticker(w);
+            return;
+        }
+        if (sticker)
+            w->setProperty(kStickerChosenProperty, false);
+        QPointer<QWidget> stickerWindow(sticker ? w->window() : nullptr);
         // Like LcButton, LcImage ignores synthetic mouse events; emit its clicked() signals.
-        QPointer<QWidget> guard(w);
         QMetaObject::invokeMethod(w, [guard] {
             if (!guard || !guard->isEnabled() || !guard->isVisible())
                 return;
@@ -872,21 +1434,25 @@ void LineAccessibleButton::press()
             if (guard)
                 emitSignal(guard, "clicked(LcImage*)", args);
         }, Qt::QueuedConnection);
+        if (sticker)
+            QTimer::singleShot(300, qApp, [stickerWindow] { closeStickerWindow(stickerWindow); });
         return;
     }
     if (!inheritsClass(w, "LcButton")) {
         LineAccessibleWidget::press();
         return;
     }
-    QPointer<QWidget> guard(w);
     QMetaObject::invokeMethod(w, [guard] {
         QWidget *target = guard.data();
         if (!target || !target->isEnabled() || !target->isVisible())
             return;
         // The chat list's folder tabs (All / Friends / Groups / Official accounts) filter the list
         // only on a mouse click: setting `selected` and emitting clicked() ticked the tab but left the
-        // list unfiltered (verified on Windows).
-        if (ancestorInheriting(target, "TabBar")) {
+        // list unfiltered (verified on Windows). Settings check boxes likewise changed their tick
+        // without saving the preference: LINE's mouse handler does the whole action.
+        const bool settingCheckBox = inheritsClass(target->window(), "SettingWindow")
+            && inheritsClass(target, "LcCheckBox") && !inRadioGroup(target);
+        if (ancestorInheriting(target, "TabBar") || settingCheckBox) {
             sendMouseClick(target);
             QTimer::singleShot(150, target, [guard] {
                 if (!guard)
@@ -948,8 +1514,11 @@ LineAccessibleText::LineAccessibleText(QWidget *w)
 QString LineAccessibleText::computeName() const
 {
     QWidget *w = widget();
-    if (QString text = widgetText(w); !text.isEmpty())
+    if (QString text = widgetText(w); !text.isEmpty()) {
+        if (QString withCount = chatNameWithMemberCount(w, text); !withCount.isEmpty())
+            return withCount;
         return text;
+    }
     return collectVisibleChildTexts(w, QStringLiteral(" "));
 }
 
@@ -1006,7 +1575,7 @@ QAccessible::State LineAccessibleText::state() const
 {
     QAccessible::State st = LineAccessibleWidget::state();
     // Empty text widgets are layout placeholders; keep VoiceOver from stopping on them.
-    if (computeName().isEmpty())
+    if (computeName().isEmpty() || isChatHeaderMemberCount(widget()))
         st.invisible = true;
     if (isPressable())
         st.linked = true;
@@ -1335,6 +1904,71 @@ QString LineAccessibleInput::attributes(int offset, int *startOffset, int *endOf
     return QString();
 }
 
+QList<int> LineAccessibleInput::visualLineStarts() const
+{
+    QList<int> starts;
+    QTextEdit *te = textEdit();
+    if (!te)
+        return starts;
+    // A block not laid out yet is one line.
+    for (QTextBlock block = te->document()->begin(); block.isValid(); block = block.next()) {
+        const QTextLayout *layout = block.layout();
+        const int lines = layout ? layout->lineCount() : 0;
+        if (lines == 0)
+            starts.append(block.position());
+        for (int i = 0; i < lines; ++i)
+            starts.append(block.position() + layout->lineAt(i).textStart());
+    }
+    return starts;
+}
+
+QString LineAccessibleInput::visualLine(int line, int *startOffset, int *endOffset) const
+{
+    const QList<int> starts = visualLineStarts();
+    if (line < 0 || line >= starts.size()) {
+        *startOffset = *endOffset = -1;
+        return QString();
+    }
+    *startOffset = starts[line];
+    // The line break or the space a line wrapped at belongs to the line.
+    *endOffset = line + 1 < starts.size() ? starts[line + 1] : characterCount();
+    return text(*startOffset, *endOffset);
+}
+
+namespace {
+
+int lineOfOffset(const QList<int> &starts, int offset)
+{
+    const auto it = std::upper_bound(starts.begin(), starts.end(), offset);
+    return qMax(0, int(it - starts.begin()) - 1);
+}
+
+} // namespace
+
+QString LineAccessibleInput::textAtOffset(int offset, QAccessible::TextBoundaryType type, int *startOffset, int *endOffset) const
+{
+    const QList<int> starts = type == QAccessible::LineBoundary ? visualLineStarts() : QList<int>();
+    if (starts.isEmpty())
+        return QAccessibleTextInterface::textAtOffset(offset, type, startOffset, endOffset);
+    return visualLine(lineOfOffset(starts, qBound(0, offset, characterCount())), startOffset, endOffset);
+}
+
+QString LineAccessibleInput::textBeforeOffset(int offset, QAccessible::TextBoundaryType type, int *startOffset, int *endOffset) const
+{
+    const QList<int> starts = type == QAccessible::LineBoundary ? visualLineStarts() : QList<int>();
+    if (starts.isEmpty())
+        return QAccessibleTextInterface::textBeforeOffset(offset, type, startOffset, endOffset);
+    return visualLine(lineOfOffset(starts, qBound(0, offset, characterCount())) - 1, startOffset, endOffset);
+}
+
+QString LineAccessibleInput::textAfterOffset(int offset, QAccessible::TextBoundaryType type, int *startOffset, int *endOffset) const
+{
+    const QList<int> starts = type == QAccessible::LineBoundary ? visualLineStarts() : QList<int>();
+    if (starts.isEmpty())
+        return QAccessibleTextInterface::textAfterOffset(offset, type, startOffset, endOffset);
+    return visualLine(lineOfOffset(starts, qBound(0, offset, characterCount())) + 1, startOffset, endOffset);
+}
+
 void LineAccessibleInput::deleteText(int startOffset, int endOffset)
 {
     replaceText(startOffset, endOffset, QString());
@@ -1407,9 +2041,39 @@ LineAccessibleWindow::LineAccessibleWindow(QWidget *w)
 {
 }
 
+// A menu LINE (LcContextMenu) or the bridge (QMenu) shows over this window, with the keyboard in it:
+// its focused item. Menus are Qt popups, which on macOS never become the key window, so macOS asked
+// this window for the focused element and VoiceOver read the list behind the menu, not its items.
+static QAccessibleInterface *popupFocus(const QWidget *window)
+{
+    QWidget *focus = QApplication::focusWidget();
+    QWidget *popup = focus ? focus->window() : nullptr;
+    if (!popup || popup == window || !popup->isVisible()
+        || (popup->windowType() != Qt::Popup && !inheritsClass(popup, "LcContextMenu")))
+        return nullptr;
+    QAccessibleInterface *iface = QAccessible::queryAccessibleInterface(focus);
+    // A QMenu (the bridge's menus) has the focus itself: its highlighted action is the item.
+    if (auto *menu = qobject_cast<QMenu *>(focus); iface && menu && menu->activeAction()) {
+        const qsizetype index = menu->actions().indexOf(menu->activeAction());
+        if (QAccessibleInterface *item = index >= 0 && index < iface->childCount() ? iface->child(int(index)) : nullptr)
+            return item;
+    }
+    return iface;
+}
+
+QAccessibleInterface *LineAccessibleWindow::focusChild() const
+{
+    if (QAccessibleInterface *menu = popupFocus(widget()))
+        return menu;
+    return QAccessibleWidget::focusChild();
+}
+
 QString LineAccessibleWindow::text(QAccessible::Text t) const
 {
     if (t != QAccessible::Name)
+        return QAccessibleWidget::text(t);
+    // The main window and chat windows already carry a useful title.
+    if (inheritsAnyClass(widget(), { "AllInOneWindow", "ChatWindow" }))
         return QAccessibleWidget::text(t);
     const QString title = cleanText(widget()->windowTitle());
     if (!title.isEmpty() && title != QLatin1String("LINE"))
@@ -1431,6 +2095,9 @@ QString LineAccessibleWindow::text(QAccessible::Text t) const
     // Windows without any title text.
     if (inheritsClass(widget(), "SettingWindow"))
         return label("Settings");
+    // The sticker window's only texts are its banner ("Download all stickers").
+    if (inheritsClass(widget(), "StickerWindow"))
+        return label("Stickers and emoji");
     // A heading right below the title bar (Albums / Notes: the chat's name).
     QWidget *heading = nullptr;
     int headingTop = 100;
@@ -1456,6 +2123,82 @@ LineAccessibleScrollArea::LineAccessibleScrollArea(QWidget *w)
 {
 }
 
+// ---- LineAccessibleQuickWidget -------------------------------------------------------------------
+
+LineAccessibleQuickWidget::LineAccessibleQuickWidget(QWidget *w)
+    : QAccessibleWidget(w, QAccessible::Graphic)
+{
+}
+
+QString LineAccessibleQuickWidget::text(QAccessible::Text t) const
+{
+    if (t != QAccessible::Name)
+        return QAccessibleWidget::text(t);
+    if (QString name = cleanText(widget()->accessibleName()); !name.isEmpty())
+        return name;
+    // The viewer stacks an image panel and a video panel (both "visible"); this widget is the video's.
+    if (!inheritsClass(widget()->window(), "MediaViewerWindow"))
+        return QString();
+    const QWidget *videoPanel = ancestorInheriting(widget(), "VideoPlayerPanel");
+    const QString kind = label(!videoPanel || videoPanel->isVisible() ? "Video" : "Photo");
+    const QString sent = viewerSenderInfo(widget()->window());
+    return sent.isEmpty() ? kind : kind + QStringLiteral(", ") + sent;
+}
+
+// The viewer's header button (shown while the mouse is over the viewer): the sender's name (LcText)
+// and the date and time (LcLabel), then an arrow. Hidden widgets are never rendered: while the
+// button is hidden only the label's own text is read.
+QString viewerSenderInfo(QWidget *viewer)
+{
+    for (QWidget *button : viewer->findChildren<QWidget *>()) {
+        if (!inheritsClass(button, "LcButton") || !iconSource(button).isEmpty())
+            continue;
+        QString sender, when;
+        for (QObject *child : button->children()) {
+            if (auto *labelWidget = qobject_cast<QLabel *>(child); labelWidget && inheritsClass(labelWidget, "LcLabel"))
+                when = cleanText(QTextDocumentFragment::fromHtml(labelWidget->text()).toPlainText());
+            else if (child->isWidgetType() && inheritsClass(child, "LcText") && sender.isEmpty())
+                sender = extractLcTextString(static_cast<QWidget *>(child));
+        }
+        // Videos opened from a note (post) carry no date: LINE shows "1 Jan 1970 7.00".
+        if (when.isEmpty() || when.contains(QLatin1StringView("1970")))
+            continue;
+        if (sender.isEmpty())
+            return when;
+        return label("sent by %1 on %2").arg(sender, when);
+    }
+    return QString();
+}
+
+int LineAccessibleQuickWidget::childCount() const
+{
+    return videoControlCount(widget());
+}
+
+QAccessibleInterface *LineAccessibleQuickWidget::child(int index) const
+{
+    return videoControl(widget(), index);
+}
+
+int LineAccessibleQuickWidget::indexOfChild(const QAccessibleInterface *child) const
+{
+    return indexOfVideoControl(widget(), child);
+}
+
+QAccessibleInterface *LineAccessibleQuickWidget::childAt(int x, int y) const
+{
+    for (int i = 0; i < childCount(); ++i) {
+        if (QAccessibleInterface *c = child(i); c && c->rect().contains(x, y))
+            return c;
+    }
+    return nullptr;
+}
+
+QAccessibleInterface *LineAccessibleQuickWidget::focusChild() const
+{
+    return focusedVideoControl(widget());
+}
+
 // ---- LineAccessibleMenu --------------------------------------------------------------------------
 
 LineAccessibleMenu::LineAccessibleMenu(QWidget *w)
@@ -1472,12 +2215,63 @@ QAccessible::Role LineAccessibleMenu::roleFor(const QWidget *w)
     return QAccessible::PopupMenu;
 }
 
+namespace {
+
+// The tick of a checkable menu item: a hidden child LcButton (image://common/menu_check_01.png)
+// whose `selected` is the item's state. 1 / 0, -1 without one.
+int menuCheckMark(const QWidget *item)
+{
+    for (QObject *child : item->children()) {
+        if (inheritsClass(child, "LcButton") && stringProp(child, "source").contains(QLatin1String("menu_check")))
+            return boolProp(child, "selected");
+    }
+    return -1;
+}
+
+// Whether a checkable menu item is one of a set of options (Sort: "Time received" / "Unread"): one
+// item of its group (items between separators) is ticked. A lone command that LINE builds as a
+// checkable item ("Mark all as read") is not.
+bool inTickedGroup(const QWidget *item)
+{
+    const QWidget *parent = item->parentWidget();
+    if (!parent)
+        return false;
+    QList<QWidget *> siblings;
+    for (QObject *o : parent->children()) {
+        if (auto *w = qobject_cast<QWidget *>(o); w && w->isVisible())
+            siblings.append(w);
+    }
+    std::stable_sort(siblings.begin(), siblings.end(),
+                     [](const QWidget *a, const QWidget *b) { return a->y() < b->y(); });
+    bool ticked = false, inGroup = false;
+    for (QWidget *w : siblings) {
+        if (!inheritsAnyClass(w, { "LcCheckableContextMenuItem", "LcCheckboxContextMenuItem", "LcContextMenuItem" })) {
+            if (inGroup)
+                return ticked; // separator after the item's group
+            ticked = false;
+            continue;
+        }
+        ticked = ticked || menuCheckMark(w) == 1;
+        inGroup = inGroup || w == item;
+    }
+    return inGroup && ticked;
+}
+
+} // namespace
+
 QAccessible::State LineAccessibleMenu::state() const
 {
     QAccessible::State st = LineAccessibleWidget::state();
-    if (inheritsAnyClass(widget(), { "LcCheckableContextMenuItem", "LcCheckboxContextMenuItem" })) {
-        st.checkable = true;
-        st.checked = firstTrueBoolProp(widget(), { "checked", "isChecked", "selected" });
+    QWidget *w = widget();
+    if (inheritsAnyClass(w, { "LcCheckableContextMenuItem", "LcCheckboxContextMenuItem" })) {
+        const int mark = menuCheckMark(w);
+        if (mark < 0) {
+            st.checkable = true;
+            st.checked = firstTrueBoolProp(w, { "checked", "isChecked", "selected" });
+        } else if (inTickedGroup(w)) {
+            st.checkable = true;
+            st.checked = mark == 1;
+        }
     }
     return st;
 }
@@ -1532,6 +2326,14 @@ void LineAccessibleMenu::press()
             QTimer::singleShot(150, menu, [guard, menu] {
                 if (!menu || !menu->isVisible())
                     return;
+                // The item opened a sub-menu (a menu window of its own): the bridge's menu keys go on
+                // there (A11yEventFilter::menuShown()).
+                for (QWidget *top : QApplication::topLevelWidgets()) {
+                    if (top != menu && top->isVisible() && inheritsClass(top, "LcContextMenu")) {
+                        a11yLog("[menu] \"%s\" opened a sub-menu", qUtf8Printable(guard ? cleanText(stringProp(guard, "text")) : QString()));
+                        return;
+                    }
+                }
                 for (const char *signal : { "clicked()", "triggered()" }) {
                     if (guard && isSignalConnected(guard, signal)) {
                         noteMenuPress(guard, signal);
