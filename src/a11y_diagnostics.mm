@@ -273,6 +273,13 @@ bool writeWidgetDump()
     }
     QTextStream out(&file);
     out << "# LINE widget dump " << QDateTime::currentDateTime().toString(Qt::ISODate) << "\n";
+    if (QWidget *focus = QApplication::focusWidget()) {
+        out << "# focus: " << classChain(focus) << " '" << focus->objectName() << "' geo="
+            << rect(QRect(focus->mapTo(focus->window(), QPoint()), focus->size())) << " parents:";
+        for (QWidget *p = focus->parentWidget(); p && !p->isWindow(); p = p->parentWidget())
+            out << ' ' << p->metaObject()->className();
+        out << "\n";
+    }
     for (QWindow *window : QGuiApplication::topLevelWindows()) {
         auto *quick = qobject_cast<QQuickWindow *>(window);
         out << "\n## QWindow " << classChain(window) << " \"" << window->title() << "\" visible=" << window->isVisible()

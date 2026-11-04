@@ -249,11 +249,25 @@ if opts.focused {
 if opts.navigationOrder {
     for window in children(app) where describe(attribute(window, kAXRoleAttribute as String)) == (kAXWindowRole as String) {
         print("window \(quoted(describe(attribute(window, kAXTitleAttribute as String))))")
-        let ordered = (attribute(window, "AXChildrenInNavigationOrder") as? [AXUIElement]) ?? []
-        for element in ordered {
-            let n = node(element)
-            print("  role=\(n.role.isEmpty ? "-" : n.role) title=\(quoted(n.title)) desc=\(quoted(n.desc)) val=\(quoted(n.val))")
+        // Groups (split views, groups) are entered with VO+Shift+Down: their own order, indented.
+        // Lists print only their row count.
+        func printOrder(_ parent: AXUIElement, _ depth: Int) {
+            let ordered = (attribute(parent, "AXChildrenInNavigationOrder") as? [AXUIElement]) ?? []
+            for element in ordered {
+                let n = node(element)
+                let indent = String(repeating: "  ", count: depth)
+                if n.role == "AXList" || n.role == "AXTable" || n.role == "AXOutline" {
+                    let rows = (attribute(element, kAXChildrenAttribute as String) as? [AXUIElement])?.count ?? 0
+                    print("\(indent)role=\(n.role) title=\(quoted(n.title)) (\(rows) rows)")
+                    continue
+                }
+                print("\(indent)role=\(n.role.isEmpty ? "-" : n.role) title=\(quoted(n.title)) desc=\(quoted(n.desc)) val=\(quoted(n.val))")
+                if depth < 8 && (n.role == "AXSplitGroup" || n.role == "AXGroup" || n.role == "AXScrollArea") {
+                    printOrder(element, depth + 1)
+                }
+            }
         }
+        printOrder(window, 1)
     }
     exit(0)
 }

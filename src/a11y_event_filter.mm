@@ -333,6 +333,28 @@ bool moveCaretPastStickerSuggester(QWidget *input, const QKeyEvent *key)
     return true;
 }
 
+// Up / Down (Shift for selecting) in the focused message input. LINE switches to the previous / next
+// chat on them from its own event filters.
+bool isMessageInputArrow(QWidget *w, const QKeyEvent *key)
+{
+    return (key->key() == Qt::Key_Up || key->key() == Qt::Key_Down)
+        && !(key->modifiers() & (Qt::ControlModifier | Qt::AltModifier))
+        && w->hasFocus() && isMessageInput(w);
+}
+
+// Gives the input the key itself, so no event filter (LINE's application or object filters) sees it.
+void passArrowToMessageInput(QWidget *input, QKeyEvent *key)
+{
+    static int logged = 0;
+    if (logged++ < 3)
+        a11yLog("[keyboard] key 0x%x in the message input bypasses LINE's filters", key->key());
+    // While LINE suggests stickers for the line at the caret ("1234", "ขอบคุณ"...), the input moves
+    // focus into the suggestions on Up: reading a text upwards lost focus there.
+    if (!moveCaretPastStickerSuggester(input, key))
+        static_cast<QObject *>(input)->event(key);
+    key->accept();
+}
+
 // The base name of an LcButton's / LcImage's icon ("image://main/sorting.svg" -> "sorting").
 QString iconBaseName(const QWidget *w)
 {
@@ -456,13 +478,18 @@ bool wantsKeyboardFocus(QWidget *w)
 }
 
 // The same control twice: LINE nests a button in a button (the chat list's show / hide arrow) or lays
-// equal buttons over each other (the chat list's ad). Only the outer / first one becomes a Tab stop.
+// equal buttons over each other (the chat list's ad). Only the outer / top one becomes a Tab stop.
 bool duplicatesTabStop(QWidget *w)
 {
     auto nameOf = [](QWidget *o) {
         QAccessibleInterface *iface = QAccessible::queryAccessibleInterface(o);
         return iface ? iface->text(QAccessible::Name) : QString();
     };
+    // The one on top (later in paint order, and the one VoiceOver sees: the accessible button hides
+    // the one it covers) is the stop. Keeping the lower one put the Tab focus on an element missing
+    // from the accessibility tree, which VoiceOver read as the unnamed split group around the chat list.
+    if (coveredByTwin(w))
+        return true;
     const QString name = nameOf(w);
     if (name.isEmpty())
         return false;
@@ -474,18 +501,6 @@ bool duplicatesTabStop(QWidget *w)
     const QRect rect(w->mapTo(w->window(), QPoint()), w->size());
     for (QComboBox *box : w->window()->findChildren<QComboBox *>()) {
         if (box->isVisible() && QRect(box->mapTo(w->window(), QPoint()), box->size()).contains(rect))
-            return true;
-    }
-    QWidget *parent = w->parentWidget();
-    if (!parent)
-        return false;
-    for (QObject *o : parent->children()) {
-        if (o == w)
-            break;
-        auto *sibling = qobject_cast<QWidget *>(o);
-        if (sibling && !sibling->isWindow() && sibling->geometry() == w->geometry()
-            && (sibling->property(kMadeFocusableProperty).toBool() || wantsKeyboardFocus(sibling))
-            && nameOf(sibling) == name)
             return true;
     }
     return false;
@@ -537,6 +552,11 @@ void collectTabStops(QWidget *w, QList<QWidget *> &content, QList<QWidget *> &ti
             continue;
         QList<QWidget *> &stops = inTitleBar ? titleBar : content;
         const qsizetype first = stops.size();
+        // The ad's lower twin became a stop before the button over it was shown.
+        if (c->property(kMadeFocusableProperty).toBool() && coveredByTwin(c)) {
+            c->setFocusPolicy(Qt::NoFocus);
+            c->setProperty(kMadeFocusableProperty, false);
+        }
         if (c->focusPolicy() & Qt::TabFocus)
             stops << c;
         // A text field's own children (clear / show-password buttons) follow the field.
@@ -632,6 +652,98 @@ void orderTabStops(QWidget *window)
     const QList<QWidget *> order = content + titleBar;
     for (qsizetype i = 1; i < order.size(); ++i)
         QWidget::setTabOrder(order[i - 1], order[i]);
+}
+
+// ---- Reading order (VoiceOver's VO+arrows; navigation_order.h) ----------------------------------
+//
+// Every shown widget of a window in the order the Tab stops follow (the Windows bridge's order):
+// widget tree, splitter panes as displayed, the message input bar from the input outwards, the
+// buttons over the messages before the message list, the chat list panel's buttons before its Sort
+// button, search field and list, and the title bar last. The chat folder tabs (in the title bar) go
+// before the chat list panel: VoiceOver reads the panel as one group.
+
+namespace {
+
+// `w` or one of its ancestors below `top` matches `pred`.
+template <typename Pred>
+bool atOrUnder(QWidget *w, const QWidget *top, Pred pred)
+{
+    for (QWidget *p = w; p && p != top; p = p->parentWidget()) {
+        if (pred(p))
+            return true;
+    }
+    return false;
+}
+
+void collectReadingOrder(QWidget *w, QList<QWidget *> &content, QList<QWidget *> &titleBar, bool inTitleBar)
+{
+    inTitleBar = inTitleBar || inheritsClass(w, "LcTitleBar");
+    for (QWidget *c : childWidgetsInOrder(w)) {
+        if (c->isWindow() || c->isHidden())
+            continue;
+        QList<QWidget *> &list = inTitleBar ? titleBar : content;
+        const qsizetype first = list.size();
+        list << c;
+        collectReadingOrder(c, content, titleBar, inTitleBar);
+        if (inheritsClass(c, "MessageInputPanel"))
+            std::reverse(list.begin() + first + 1, list.end());
+        if (inheritsClass(c, "ChatMessageView"))
+            std::stable_partition(list.begin() + first + 1, list.end(), [c](QWidget *x) {
+                return !atOrUnder(x, c, [](QWidget *p) { return isLineListView(p) && !ancestorInheriting(p, "LcListView"); });
+            });
+        if (inheritsClass(c, "MainChatPanel")) {
+            auto rank = [c](QWidget *x) {
+                if (atOrUnder(x, c, [](QWidget *p) { return isLineListView(p) && !ancestorInheriting(p, "LcListView"); }))
+                    return 3;
+                if (atOrUnder(x, c, [](QWidget *p) { return inheritsClass(p, "QLineEdit"); }))
+                    return 2;
+                return atOrUnder(x, c, [](QWidget *p) { return isChatSortButton(p); }) ? 1 : 0;
+            };
+            std::stable_sort(list.begin() + first + 1, list.end(),
+                             [&rank](QWidget *a, QWidget *b) { return rank(a) < rank(b); });
+        }
+    }
+}
+
+} // namespace
+
+QHash<const QWidget *, int> readingOrderKeysIn(QWidget *window)
+{
+    QList<QWidget *> content, titleBar;
+    collectReadingOrder(window, content, titleBar, false);
+    // The folder tabs, before the chat list panel.
+    const auto panel = std::find_if(content.begin(), content.end(), [](QWidget *w) { return inheritsClass(w, "MainChatPanel"); });
+    if (panel != content.end()) {
+        QList<QWidget *> folders;
+        titleBar.removeIf([&folders](QWidget *w) {
+            if (!inheritsClass(w, "TabBar") && !ancestorInheriting(w, "TabBar"))
+                return false;
+            folders << w;
+            return true;
+        });
+        const qsizetype at = panel - content.begin();
+        for (qsizetype i = 0; i < folders.size(); ++i)
+            content.insert(at + i, folders.at(i));
+    }
+    const QList<QWidget *> order = content + titleBar;
+    // A widget's key is its first shown leaf's place: a group is read where its first element is.
+    QHash<const QWidget *, int> keys;
+    for (int i = 0; i < order.size(); ++i) {
+        QWidget *w = order.at(i);
+        const bool leaf = std::none_of(w->children().cbegin(), w->children().cend(), [](QObject *o) {
+            return o->isWidgetType() && !static_cast<QWidget *>(o)->isWindow() && !static_cast<QWidget *>(o)->isHidden();
+        });
+        if (!leaf)
+            continue;
+        for (QWidget *p = w; p && p != window; p = p->parentWidget()) {
+            auto it = keys.find(p);
+            if (it == keys.end())
+                keys.insert(p, i);
+            else if (i < *it)
+                *it = i;
+        }
+    }
+    return keys;
 }
 
 // Makes the mouse-only controls in `root` focusable; re-orders the window's Tab stops when
@@ -800,10 +912,27 @@ QPointer<QWidget> g_windowAfterMenu;
 QPointer<QQuickWindow> g_quickWindowAfterMenu;
 // The pressed menu item was one of a set of options (Sort: Time received / Unread).
 bool g_menuOptionPressed = false;
+// The chosen item was the message menu's Reply: the keyboard goes to the message input.
+bool g_menuReplyPressed = false;
+
+bool isReplyItemName(const QString &name)
+{
+    static const QStringList names = { QStringLiteral("Reply"), QStringLiteral("ตอบกลับ"), QStringLiteral("リプライ"),
+                                       QStringLiteral("返信"), QStringLiteral("回覆"), QStringLiteral("回复") };
+    return names.contains(name.trimmed());
+}
 
 bool menuPressIsRecent()
 {
     return g_menuPressTimer.isValid() && g_menuPressTimer.elapsed() < 3000;
+}
+
+// A menu command was chosen a moment ago: focus moves now come from it (Reply focuses the message
+// input; the menu closing first returns focus to the list), not from LINE pulling focus away from a
+// list being read.
+bool menuCommandJustRan()
+{
+    return g_menuPressTimer.isValid() && g_menuPressTimer.elapsed() < 1500;
 }
 
 void noteShownAfterPress(QWidget *w)
@@ -1296,6 +1425,12 @@ bool focusSortedListTop(QWidget *button)
 
 } // namespace
 
+QHash<const QWidget *, int> readingOrderKeys(QWidget *window)
+{
+    return readingOrderKeysIn(window);
+}
+
+
 void enforceAccessibilityHandler(const char *reason)
 {
     const QAccessible::UpdateHandler ours = bridgeUpdateHandler();
@@ -1358,7 +1493,12 @@ void noteMenuPress(QWidget *item, const char *how)
     g_quickWindowAfterMenu = nullptr;
     QAccessibleInterface *iface = item ? QAccessible::queryAccessibleInterface(item) : nullptr;
     g_menuOptionPressed = iface && iface->state().checkable;
-    a11yLog("[menu] pressed \"%s\" (%s)", iface ? qUtf8Printable(iface->text(QAccessible::Name)) : "", how);
+    const QString name = iface ? iface->text(QAccessible::Name) : QString();
+    g_menuReplyPressed = isReplyItemName(name);
+    // A command was chosen: where LINE moves the keyboard now is meant (Reply focuses the message
+    // input), not LINE pulling focus away from the list being read (the bridge sent it back).
+    endListBrowsing();
+    a11yLog("[menu] pressed \"%s\" (%s)", qUtf8Printable(name), how);
 }
 
 void setMenuRetry(std::function<void()> retry)
@@ -1393,7 +1533,7 @@ bool A11yEventFilter::browsing(const QWidget *list) const
 bool A11yEventFilter::suppressFocusOn(const QWidget *w) const
 {
     return m_browsingList && w != m_browsingList.data() && m_listKeyTimer.isValid()
-        && m_listKeyTimer.elapsed() < 5000 && isInOpenChat(w);
+        && m_listKeyTimer.elapsed() < 5000 && isInOpenChat(w) && !menuCommandJustRan();
 }
 
 void A11yEventFilter::startWatchdog(int intervalMs)
@@ -1637,6 +1777,28 @@ bool A11yEventFilter::eventFilter(QObject *watched, QEvent *event)
         break;
     }
     case QEvent::KeyPress:
+        // One Tab, one step. LINE's widgets leave Tab unaccepted after Qt has moved the focus, so
+        // QApplication::notify passed it on to every parent (TabButton, LcScrollArea, TabBar,
+        // LcTitleBar, the window), and each moved the focus again: a press jumped 6 to 12 controls
+        // (seen 2026-11-03). The first widget's move stands; the parents get nothing.
+        if (const auto *key = static_cast<QKeyEvent *>(event);
+            key->key() == Qt::Key_Tab || key->key() == Qt::Key_Backtab) {
+            static const QEvent *tabEvent = nullptr;
+            static QPointer<QWidget> tabTarget;
+            static QPointer<QWidget> focusBefore;
+            const bool passedOn = !event->spontaneous() && event == tabEvent && tabTarget && w != tabTarget.data()
+                && w->isAncestorOf(tabTarget);
+            // (A widget that ignored Tab without moving the focus leaves it to its parents, as before.)
+            if (passedOn && QApplication::focusWidget() != focusBefore.data()) {
+                event->accept();
+                return true;
+            }
+            if (!passedOn) {
+                tabEvent = event;
+                tabTarget = w;
+                focusBefore = QApplication::focusWidget();
+            }
+        }
         // Qt passes a key on to the parent widgets unless it was accepted, even when a filter took
         // it: Escape in the reaction picker then reached LINE's chat panel, which closed the chat.
         if (handleKeyPress(w, static_cast<QKeyEvent *>(event))) {
@@ -1718,18 +1880,10 @@ bool A11yEventFilter::handleKeyPress(QWidget *w, QKeyEvent *key)
     if (key->key() == Qt::Key_S && (key->modifiers() & kAnyModifier) == Qt::ControlModifier && !key->isAutoRepeat()
         && isViewerWindow(w->window()) && saveViewerMedia(w->window()))
         return true;
-    // LINE's own application event filters (after this one) switch to the previous / next chat on
-    // Up/Down in the message input: the input gets them directly instead.
-    if ((key->key() == Qt::Key_Up || key->key() == Qt::Key_Down) && !(key->modifiers() & (Qt::ControlModifier | Qt::AltModifier))
-        && w->hasFocus() && isMessageInput(w)) {
-        static int logged = 0;
-        if (logged++ < 3)
-            a11yLog("[keyboard] key 0x%x in the message input bypasses LINE's filters", key->key());
-        // While LINE suggests stickers for the line at the caret ("1234", "ขอบคุณ"...), the input moves
-        // focus into the suggestions on Up: reading a text upwards lost focus there.
-        if (moveCaretPastStickerSuggester(w, key))
-            return true;
-        static_cast<QObject *>(w)->event(key);
+    // LINE's own application event filters switch to the previous / next chat on Up/Down in the
+    // message input: the input gets them directly instead (normally earlier, in earlyKeyHook()).
+    if (isMessageInputArrow(w, key)) {
+        passArrowToMessageInput(w, key);
         return true;
     }
     // The full-text view (full_text_view.h): LINE's filters eat the arrows too. Tab and Escape go the
@@ -2121,13 +2275,15 @@ void A11yEventFilter::handleFocusIn(QWidget *w, Qt::FocusReason reason)
         }
         // LINE hands focus on from the message list to the message input; reading messages needs it
         // to stay (Tab still moves on).
-        m_browsingList = w;
-        m_listKeyTimer.start();
+        if (!menuCommandJustRan()) {
+            m_browsingList = w;
+            m_listKeyTimer.start();
+        }
     }
     // Arrowing through the chat list opens each chat, and once it has loaded (up to a few seconds
     // later) LINE moves focus into the chat: keep the user in the list instead.
     if (m_browsingList && m_browsingList->isVisible() && w != m_browsingList.data() && isInOpenChat(w)
-        && m_listKeyTimer.isValid() && m_listKeyTimer.elapsed() < 5000) {
+        && m_listKeyTimer.isValid() && m_listKeyTimer.elapsed() < 5000 && !menuCommandJustRan()) {
         static int logged = 0;
         if (logged++ < 10)
             a11yLog("[keyboard] LINE moved focus to %s while browsing; back to the list", w->metaObject()->className());
@@ -2237,6 +2393,12 @@ void A11yEventFilter::menuHidden()
         QWidget *target = window->focusWidget();
         if (!target || !target->isVisible() || contextMenuOf(target))
             target = back;
+        // Reply: straight to the message input, under LINE's reply bar (user request 2026-11-03).
+        if (g_menuReplyPressed && g_menuPressTimer.isValid() && g_menuPressTimer.elapsed() < 3000) {
+            g_menuReplyPressed = false;
+            if (QWidget *input = messageInputIn(window))
+                target = input;
+        }
         if (!window->isActiveWindow())
             window->activateWindow();
         target->setFocus(Qt::PopupFocusReason);
@@ -2300,6 +2462,57 @@ void A11yEventFilter::announceDelegate(QWidget *delegate)
     m_lastAnnouncement = text;
     if (!repeated)
         postAnnouncement(text);
+}
+
+namespace {
+
+// QInternal::EventNotifyCallback: Qt calls it in QCoreApplication::notifyInternal2(), before any
+// application or object event filter. The bridge's application filter is put back in front of LINE's
+// only once a second (watchdogTick()), so for up to a second after LINE installs a filter of its own
+// LINE saw Up / Down in the message input first and switched chats ("sometimes" while writing a long
+// message, user report 2026-11-03). The key is caught here at both stages of its delivery: the
+// QWidgetWindow (where application filters already see it) and the focused input.
+bool earlyKeyHook(void **data)
+{
+    auto *event = static_cast<QEvent *>(data[1]);
+    if (event->type() != QEvent::KeyPress && event->type() != QEvent::ShortcutOverride)
+        return false;
+    auto *receiver = static_cast<QObject *>(data[0]);
+    QWidget *input = nullptr;
+    if (receiver->isWidgetType()) {
+        input = static_cast<QWidget *>(receiver);
+    } else if (receiver->isWindowType()) {
+        QWidget *focus = QApplication::focusWidget();
+        if (!focus || focus->window()->windowHandle() != receiver)
+            return false;
+        input = focus;
+    } else {
+        return false;
+    }
+    auto *key = static_cast<QKeyEvent *>(event);
+    if (!isMessageInputArrow(input, key))
+        return false;
+    // ShortcutOverride accepted: no window or application shortcut takes the key.
+    if (event->type() == QEvent::KeyPress) {
+        if (event->spontaneous())
+            markUserActivity();
+        passArrowToMessageInput(input, key);
+    } else {
+        event->accept();
+    }
+    *static_cast<bool *>(data[2]) = true;
+    return true;
+}
+
+} // namespace
+
+void installEarlyKeyHook()
+{
+    static bool installed = false;
+    if (installed)
+        return;
+    installed = QInternal::registerCallback(QInternal::EventNotifyCallback, earlyKeyHook);
+    a11yLog("[keyboard] early key hook %s", installed ? "installed" : "NOT installed");
 }
 
 } // namespace line_a11y

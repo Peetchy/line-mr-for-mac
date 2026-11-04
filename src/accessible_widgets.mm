@@ -1097,7 +1097,7 @@ bool LineAccessibleButton::isSelected() const
 
 // Another visible sibling button laid exactly over this one, later in paint order (so on top and
 // receiving the clicks): LINE's ad banner stacks two full-size buttons.
-static bool coveredByTwin(const QWidget *w)
+bool coveredByTwin(const QWidget *w)
 {
     QWidget *parent = w->parentWidget();
     if (!parent)

@@ -54,6 +54,9 @@ bool chatHasMemberCount(const QWidget *w);
 // The chat shown in `w`'s window (its header): the name as drawn (LINE elides long ones with "...")
 // and the member count of a group (-1 for a one-to-one chat). False if no chat is shown.
 bool openChatHeader(const QWidget *w, QString *name, int *members);
+// Another visible sibling LcButton laid exactly over `w`, later in paint order (LINE's ad banner
+// stacks two full-size buttons): `w` is hidden from VoiceOver and is no Tab stop.
+bool coveredByTwin(const QWidget *w);
 // The chat header's name and member count ("(500)") both open the member list: the name reads
 // "<name>, 500 members" (chatNameWithMemberCount, "" if `w` is not the header's name) and the count
 // is left out (no Tab stop, invisible to UIA).

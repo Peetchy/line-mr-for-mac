@@ -21,7 +21,7 @@ CALL_A11Y_DIR := $(CACHE_DIR)/jp.naver.line.mac.LineCall/a11y
 CALL_INSTALLED := $(CALL_A11Y_DIR)/platformthemes/libline_a11y.dylib
 
 # Distribution: LINE MR.app (opens LINE with the bridge), an installer package and a disk image.
-VERSION      ?= 0.2.0
+VERSION      ?= 0.2.1
 APP_ID       := io.github.peetchy.line-mr
 APP_NAME     := LINE MR
 APP_BUNDLE   := $(BUILD)/$(APP_NAME).app

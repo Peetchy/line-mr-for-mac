@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <QtCore/QHash>
+
 #include <QtCore/QElapsedTimer>
 #include <QtCore/QObject>
 #include <QtCore/QPointer>
@@ -23,6 +25,14 @@ namespace line_a11y {
 // Re-installs the bridge's update handler (undoing LcApplication's no-op handler) and marks
 // accessibility active. Logs whenever a foreign handler had to be removed.
 void enforceAccessibilityHandler(const char *reason);
+
+// Catches Up / Down in the message input before any event filter (QInternal::EventNotifyCallback):
+// LINE's filters switch chats on them.
+void installEarlyKeyHook();
+
+// VoiceOver reading order of `window` (navigation_order.mm): for each shown widget, its place in the
+// order the Tab stops follow (a group: its first element's place). Lower first.
+QHash<const QWidget *, int> readingOrderKeys(QWidget *window);
 
 // The user moved focus or pressed a control through VoiceOver: stop sending focus back to a list
 // LINE pulled it away from.

@@ -397,6 +397,45 @@ QString rowText(QAbstractItemView *view, int row)
     return display.metaType().id() == QMetaType::QString ? cleanText(display.toString()) : QString();
 }
 
+// Whether a row has nothing to say (it is then left out of the accessibility tree). Qt's Cocoa bridge
+// asks every row's state() each time VoiceOver reads the list's children, several times per arrow
+// step: building the full text of every row there (all of a chat's properties, the open chat's
+// header) took about 0.9 s per step in a chat list of a few hundred chats (measured 2026-11-03).
+// Rows with a name are never blank; other answers are kept while the row holds the same data object
+// (QPointer: LINE reuses freed objects' addresses), a blank one only briefly (OCR may fill it in).
+bool rowIsBlank(QAbstractItemView *view, int row)
+{
+    struct Seen {
+        QPointer<QObject> data;
+        bool hasData = false;
+        bool blank = false;
+        qint64 at = 0;
+    };
+    static QHash<QPair<const QAbstractItemView *, int>, Seen> seen;
+    if (seen.size() > 20000)
+        seen.clear();
+    QObject *data = rowData(view, row);
+    Seen &entry = seen[qMakePair(static_cast<const QAbstractItemView *>(view), row)];
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    const bool same = entry.at && entry.hasData == (data != nullptr) && entry.data.data() == data;
+    if (same && now - entry.at < (entry.blank ? 1000 : 30000))
+        return entry.blank;
+    bool named = false;
+    if (data) {
+        // (LINE computes a chat's name in its getter: read only when the row's object is new.)
+        for (const char *name : { "name", "displayName" }) {
+            const QVariant value = data->property(name);
+            if (value.metaType().id() == QMetaType::QString && !value.toString().trimmed().isEmpty()) {
+                named = true;
+                break;
+            }
+        }
+    }
+    const bool blank = !named && rowText(view, row).isEmpty();
+    entry = Seen { data, data != nullptr, blank, now };
+    return blank;
+}
+
 // ---- Where a message's parts are drawn --------------------------------------------------------
 //
 // The Windows bridge learnt the sizes below from LINE for Windows at 150 % display scale, where
@@ -1454,7 +1493,7 @@ public:
         // pressing one scrolls it into view first. Rows with nothing to say yet (e.g. a date
         // separator scrolled out of view, which exists only as pixels) are left out instead of
         // being read as an empty "text".
-        if (m_view->visualRect(idx).height() <= 1 || !m_view->isVisible() || text(QAccessible::Name).isEmpty())
+        if (m_view->visualRect(idx).height() <= 1 || !m_view->isVisible() || rowIsBlank(m_view, m_row))
             st.invisible = true;
         return st;
     }

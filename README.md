@@ -6,12 +6,12 @@ A VoiceOver accessibility bridge for **LINE for macOS** (`/Applications/LINE.app
 
 ## การติดตั้งสำหรับผู้ใช้ / Installation
 
-**เวอร์ชันล่าสุด: [v0.2.0](https://github.com/Peetchy/line-mr-for-mac/releases/tag/v0.2.0)**
+**เวอร์ชันล่าสุด: [v0.2.1](https://github.com/Peetchy/line-mr-for-mac/releases/tag/v0.2.1)**
 
 | ไฟล์ | ลิงก์ดาวน์โหลด |
 |---|---|
-| **DMG (แนะนำ)**: ตัวติดตั้ง ตัวโปรแกรม และวิธีติดตั้ง | [LINE-MR-0.2.0.dmg](https://github.com/Peetchy/line-mr-for-mac/releases/download/v0.2.0/LINE-MR-0.2.0.dmg) |
-| **PKG**: ตัวติดตั้งอย่างเดียว | [LINE-MR-0.2.0.pkg](https://github.com/Peetchy/line-mr-for-mac/releases/download/v0.2.0/LINE-MR-0.2.0.pkg) |
+| **DMG (แนะนำ)**: ตัวติดตั้ง ตัวโปรแกรม และวิธีติดตั้ง | [LINE-MR-0.2.1.dmg](https://github.com/Peetchy/line-mr-for-mac/releases/download/v0.2.1/LINE-MR-0.2.1.dmg) |
+| **PKG**: ตัวติดตั้งอย่างเดียว | [LINE-MR-0.2.1.pkg](https://github.com/Peetchy/line-mr-for-mac/releases/download/v0.2.1/LINE-MR-0.2.1.pkg) |
 | เวอร์ชันทั้งหมด | [Releases](https://github.com/Peetchy/line-mr-for-mac/releases) |
 
 > English summary: download the `.dmg` above, allow it in **System Settings > Privacy & Security > Open Anyway** (it is not signed with an Apple Developer ID), install with `Install LINE MR.pkg` or drag `LINE MR` to Applications, then always open LINE through **LINE MR**. Details in Thai below; an English copy is in the disk image's Read Me.
@@ -24,7 +24,7 @@ A VoiceOver accessibility bridge for **LINE for macOS** (`/Applications/LINE.app
 
 ### ขั้นที่ 1: ดาวน์โหลด
 
-1. กดลิงก์ [LINE-MR-0.2.0.dmg](https://github.com/Peetchy/line-mr-for-mac/releases/download/v0.2.0/LINE-MR-0.2.0.dmg) ในตารางด้านบน หรือเข้าหน้า [Releases](https://github.com/Peetchy/line-mr-for-mac/releases) แล้วเลือกไฟล์ `.dmg` ในหัวข้อ Assets ของเวอร์ชันล่าสุด
+1. กดลิงก์ [LINE-MR-0.2.1.dmg](https://github.com/Peetchy/line-mr-for-mac/releases/download/v0.2.1/LINE-MR-0.2.1.dmg) ในตารางด้านบน หรือเข้าหน้า [Releases](https://github.com/Peetchy/line-mr-for-mac/releases) แล้วเลือกไฟล์ `.dmg` ในหัวข้อ Assets ของเวอร์ชันล่าสุด
 2. ถ้า Safari ถามว่าจะอนุญาตให้ดาวน์โหลดจาก github.com ไหม ให้กด **Allow**
 3. ไฟล์จะอยู่ในโฟลเดอร์ **Downloads** (เปิดด้วย Option+Command+L ใน Finder)
 4. (ไม่บังคับ) ตรวจว่าไฟล์ไม่เสียหาย ด้วยคำสั่งใน Terminal แล้วเทียบกับไฟล์ `SHA256SUMS.txt` ในหน้า Release:

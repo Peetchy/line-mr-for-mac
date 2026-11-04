@@ -131,6 +131,7 @@ void startBridge()
 
     g_filter = new A11yEventFilter(app);
     app->installEventFilter(g_filter);
+    installEarlyKeyHook();
     startFocusHighlight(app);
     g_filter->startWatchdog(kWatchdogIntervalMs);
 
