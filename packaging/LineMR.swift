@@ -12,7 +12,7 @@ import AppKit
 
 let lineID = "jp.naver.line.mac"
 let callID = "jp.naver.line.mac.LineCall"
-let testedVersion = "26.5.0 (3975)"
+let testedVersion = "26.6.0 (4004)"
 let repository = "Peetchy/line-mr-for-mac"
 let currentVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
 

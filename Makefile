@@ -49,7 +49,7 @@ SOURCES      := src/a11y_log.mm src/a11y_diagnostics.mm src/line_introspect.mm s
 HEADERS      := $(wildcard src/*.h)
 OBJECTS      := $(patsubst src/%.mm,$(BUILD)/obj/%.o,$(SOURCES))
 
-.PHONY: all install uninstall test check-load clean check-qt app pkg dmg dist
+.PHONY: all install uninstall test unit-test check-load clean check-qt app pkg dmg dist
 
 all: $(DYLIB) $(SHIM) $(AX_INSPECT)
 
@@ -100,6 +100,14 @@ uninstall:
 
 test: all
 	tests/verify_ax_tree.sh
+
+# LINE's own message text and what the bridge adds to it (does not touch LINE).
+$(BUILD)/test_native_message_text: tests/test_native_message_text.cpp src/native_message_text.h | check-qt
+	@mkdir -p $(BUILD)
+	$(CXX) $(CXXFLAGS) -Isrc $< -o $@ -arch $(ARCH) -F$(QT_FW) -framework QtCore -framework QtGui -Wl,-rpath,$(QT_FW)
+
+unit-test: $(BUILD)/test_native_message_text
+	QT_PLUGIN_PATH=/Applications/LINE.app/Contents/PlugIns $(BUILD)/test_native_message_text
 
 # Loads the installed plugin into a minimal Qt host built against LINE's Qt (does not touch LINE).
 $(BUILD)/plugin_load_check: tests/plugin_load_check.mm | check-qt

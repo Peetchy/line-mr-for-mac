@@ -9,6 +9,7 @@
 #include "qt_signal_utils.h"
 #include "text_capture.h"
 #include "text_recognition.h"
+#include "native_message_text.h"
 
 #include <QtCore/QAbstractItemModel>
 #include <QtCore/QCoreApplication>
@@ -16,6 +17,10 @@
 #include <QtCore/QElapsedTimer>
 #include <QtCore/QItemSelectionModel>
 #include <QtCore/QFile>
+#include <QtCore/QFileInfo>
+#include <QtCore/QMimeData>
+#include <QtCore/QScopedValueRollback>
+#include <QtCore/QSettings>
 #include <QtCore/QMetaMethod>
 #include <QtCore/QMetaProperty>
 #include <QtCore/QRegularExpression>
@@ -32,6 +37,7 @@
 #include <QtGui/QWindow>
 #include <QtWidgets/QAbstractItemView>
 #include <QtWidgets/QApplication>
+#include <QtWidgets/QFileDialog>
 #include <QtWidgets/QScrollBar>
 #include <QtWidgets/QMenu>
 #include <QtGui/QWheelEvent>
@@ -96,7 +102,7 @@ QString countPhrase(const QByteArray &name, int value)
         return QString::number(value);
     if (name == "unreadCount" || name == "badgeCount" || name == "newCount") {
         const QString n = value > 999 ? QStringLiteral("999+") : QString::number(value);
-        return label("%1 unread").arg(n);
+        return label("%1 unread messages").arg(n);
     }
     return QString();
 }
@@ -249,9 +255,7 @@ QString messageKindLabel(const QString &delegateClass)
 // "已讀") labels.
 bool isTimeOrReceipt(const QString &text)
 {
-    static const QRegularExpression pattern(QStringLiteral(
-        "^(([上下]午\\s?)?\\d{1,2}[:.]\\d{2}(\\s?([AaPp][Mm]|น\\.?))?|Read( \\d+)?|อ่านแล้ว( \\d+)?|已讀(\\s?\\d+)?)$"));
-    return pattern.match(text.trimmed()).hasMatch();
+    return isMessageTimeOrReceipt(text);
 }
 
 // What the message row shows, without sender / time: its text, the file, or the kind of content.
@@ -273,6 +277,8 @@ QString chatMessageContent(const ChatMessageFields &f, const QString &delegateCl
         return parts.join(QLatin1StringView(", "));
     }
     const QString kind = messageKindLabel(delegateClass);
+    if (const QString length = cleanText(f.duration); !length.isEmpty() && !kind.isEmpty())
+        return kind + QStringLiteral(", ") + spokenDuration(length);
     if (!f.mediaPath.isEmpty())
         return kind.isEmpty() || kind == label("File") ? label("Photo") : kind;
     return kind;
@@ -352,9 +358,194 @@ QObject *rowData(QAbstractItemView *view, int row)
 }
 
 QString messageReactions(QAbstractItemView *view, int row, const QString &messageId);
+QString firstPaintedLine(QAbstractItemView *view, const QModelIndex &index);
 QString withChatStatus(QAbstractItemView *view, int row, const QString &text, QObject *data);
 QString packageRowText(QAbstractItemView *view, int row, QObject *data);
 QString paintedListRowText(QAbstractItemView *view, int row);
+
+// message-settings.ini next to a11y.log, read at most once a second:
+//   [messages]
+//   directChatSenderNames=true    read the other person's name before their messages in one-to-one chats
+//   senderOnlyWhenChanged=true    read the sender's name only when the sender changes
+struct MessageSettings {
+    bool directChatSenderNames = false;
+    bool senderOnlyWhenChanged = false;
+};
+
+const MessageSettings &messageSettings()
+{
+    static QElapsedTimer checked;
+    static MessageSettings settings;
+    if (!checked.isValid() || checked.elapsed() >= 1000) {
+        checked.start();
+        QSettings ini(bridgeDirectory() + QStringLiteral("message-settings.ini"), QSettings::IniFormat);
+        settings.directChatSenderNames = ini.value(QStringLiteral("messages/directChatSenderNames"), false).toBool();
+        settings.senderOnlyWhenChanged = ini.value(QStringLiteral("messages/senderOnlyWhenChanged"), false).toBool();
+    }
+    return settings;
+}
+
+// The chat shown in `v` is Keep Memo (the chat with the user themselves: its id is the user's own,
+// the first profile of the friend list). Worked out once per chat (LINE's name getter is expensive).
+bool inKeepMemo(QAbstractItemView *v)
+{
+    static QString chat;
+    static int state = -1;
+    static QElapsedTimer tried;
+    const QString shown = chatNameFor(v);
+    if (chat == shown && (state >= 0 || (tried.isValid() && tried.elapsed() < 2000)))
+        return state == 1;
+    chat = shown;
+    state = -1;
+    tried.start();
+    if (shown.isEmpty())
+        return false;
+    // The friend list (the user's own id) may not exist yet: LINE's own names for it first.
+    for (const char *name : { "Keep Memo", "Keepメモ", "Keep筆記", "Keep 笔记", "Keep笔记" }) {
+        if (shown == QString::fromUtf8(name)) {
+            state = 1;
+            return true;
+        }
+    }
+    const QString start = shown.endsWith(QStringLiteral("...")) ? shown.chopped(3).trimmed()
+        : shown.endsWith(QChar(0x2026)) ? shown.chopped(1).trimmed() : QString();
+    QString own, id;
+    for (QWidget *top : QApplication::topLevelWidgets()) {
+        if (!inheritsClass(top, "AllInOneWindow"))
+            continue;
+        for (auto *list : top->findChildren<QAbstractItemView *>(QStringLiteral("lineMR_list_friends"))) {
+            QAbstractItemModel *m = list->model();
+            for (int r = 0; m && own.isEmpty() && r < qMin(m->rowCount(list->rootIndex()), 20); ++r) {
+                QObject *data = m->index(r, 0, list->rootIndex()).data(kItemDataRole).value<QObject *>();
+                if (inheritsClass(data, "ProfileData"))
+                    own = data->property("mid").toString();
+            }
+        }
+        for (auto *list : top->findChildren<QAbstractItemView *>(QStringLiteral("lineMR_list_chats"))) {
+            QAbstractItemModel *m = list->model();
+            for (int r = 0; m && id.isEmpty() && r < qMin(m->rowCount(list->rootIndex()), 500); ++r) {
+                QObject *data = m->index(r, 0, list->rootIndex()).data(kItemDataRole).value<QObject *>();
+                if (!inheritsClass(data, "ChatData"))
+                    continue;
+                const QString name = cleanText(data->property("name").toString());
+                if (name == shown || (!start.isEmpty() && name.startsWith(start)))
+                    id = data->property("id").toString();
+            }
+        }
+    }
+    if (!own.isEmpty() && !id.isEmpty())
+        state = id == own ? 1 : 0;
+    return state == 1;
+}
+
+const MessageLabels &messageLabels()
+{
+    static const MessageLabels labels = [] {
+        MessageLabels l;
+        l.you = label("You");
+        l.replyTo = label("Reply to %1: %2");
+        l.original = label("Original message: %1");
+        l.kindsToName = QStringList { label("Location"), label("Contact") };
+        l.album = label("Photos");
+        l.photoWords = QStringList { QStringLiteral("Photo"), QStringLiteral("รูป"), QStringLiteral("写真"),
+                                     QStringLiteral("照片"), QStringLiteral("图片"), QStringLiteral("圖片") };
+        l.duration = spokenDuration;
+        return l;
+    }();
+    return labels;
+}
+
+// What LINE's own text of a message leaves out, from the row's data (the Windows bridge reads the
+// same from the drawn row).
+MessageRowParts messageRowParts(QAbstractItemView *view, int row, const ChatMessageFields &f, const QString &cls,
+                                ListRowTextCache *cache, const QString &native)
+{
+    MessageRowParts parts;
+    parts.captured = true;
+    // Notices ("Message unsent.") have a sender but no time, also when the row's class is not known.
+    const bool notice = cls.contains(QLatin1StringView("Info")) || cls.contains(QLatin1StringView("Date"))
+        || cls.contains(QLatin1StringView("UnreadMsg")) || cleanText(f.timeLabel).isEmpty();
+    if (f.senderMid.isEmpty() || f.id.startsWith(QLatin1Char('l')) || notice)
+        return parts;
+    parts.own = cache->isOwnMessage(f) || inKeepMemo(view);
+    if (!parts.own && messageSettings().directChatSenderNames && !chatHasMemberCount(view))
+        parts.sender = chatNameFor(view);
+    if (!cleanText(f.locationTitle).isEmpty()) {
+        parts.kind = label("Location");
+    } else if (cleanText(f.text).isEmpty()) {
+        parts.kind = cls.contains(QLatin1StringView("MultipleImage")) ? label("Photos") : messageKindLabel(cls);
+        // A row that has not been on screen has no class yet.
+        if (parts.kind.isEmpty() && !f.contactMid.isEmpty())
+            parts.kind = label("Contact");
+        else if (parts.kind.isEmpty() && f.mediaPath.contains(QLatin1StringView("sticker"), Qt::CaseInsensitive))
+            parts.kind = label("Sticker");
+        // The contact's name is drawn only.
+        if (cls.contains(QLatin1StringView("Contact")))
+            parts.details << firstPaintedLine(view, view->model()->index(row, 0, view->rootIndex()));
+    }
+    if (cls.contains(QLatin1StringView("Call")) || cls.contains(QLatin1StringView("Audio")) || cls.contains(QLatin1StringView("Video"))) {
+        // "00:07, 20.49, Read": a clock before the time the message was sent is its length.
+        static const QRegularExpression clock(QStringLiteral("^\\d{1,2}:\\d{2}(:\\d{2})?$"));
+        const QStringList fields = native.split(QStringLiteral(", "));
+        qsizetype end = fields.size();
+        while (end > 0 && isMessageTimeOrReceipt(fields.at(end - 1)) && !fields.at(end - 1).contains(QLatin1Char(':'))
+               && !fields.at(end - 1).contains(QLatin1Char('.')))
+            --end;
+        for (qsizetype i = 0; i + 1 < end; ++i) {
+            if (clock.match(fields.at(i).trimmed()).hasMatch())
+                parts.lengths << fields.at(i).trimmed();
+        }
+        if (parts.lengths.isEmpty() && !cleanText(f.duration).isEmpty())
+            parts.lengths << cleanText(f.duration);
+    }
+    for (const QString &detail : { f.fileSize, f.fileStatus }) {
+        if (const QString t = cleanText(detail); !t.isEmpty() && !cleanText(f.fileName).isEmpty())
+            parts.details << t;
+    }
+    parts.reactions = messageReactions(view, row, f.id);
+    return parts;
+}
+
+// LINE's own text of a message (LINE 26.6: Qt::AccessibleTextRole of ChatMessageModel) with what only
+// the row's data tells; "" when LINE gives none.
+QString nativeMessageRowText(QAbstractItemView *view, int row, bool checkPrevious = true)
+{
+    QAbstractItemModel *model = view->model();
+    ListRowTextCache *cache = ListRowTextCache::forView(view);
+    if (!cache || !inheritsClass(model, "ChatMessageModel") || !ancestorInheriting(view, "ChatMessageView")
+        || ancestorInheriting(view, "SearchDetailPanel"))
+        return QString();
+    const QModelIndex idx = model->index(row, 0, view->rootIndex());
+    const QString native = nativeMessageText(idx.data(Qt::AccessibleTextRole));
+    if (native.isEmpty())
+        return QString();
+    const ChatMessageFields fields = readChatMessageData(idx.data(kItemDataRole).value<QObject *>());
+    // "Voice message duration 7 seconds", "Video duration 241 seconds": in words, as other lengths.
+    QString body = native;
+    if (const QString length = cleanText(fields.duration); !length.isEmpty()) {
+        const QStringList clock = length.split(QLatin1Char(':'));
+        int total = 0;
+        for (const QString &part : clock)
+            total = total * 60 + part.toInt();
+        const QRegularExpression seconds(QStringLiteral("(^|\\D)%1(\\D|$)").arg(total));
+        QStringList parts = body.split(QStringLiteral(", "));
+        for (QString &field : parts) {
+            if (field.contains(seconds) && !isMessageTimeOrReceipt(field)) {
+                field = spokenDuration(length);
+                break;
+            }
+        }
+        body = parts.join(QStringLiteral(", "));
+    }
+    QString text = withMessageParts(body, messageRowParts(view, row, fields, cache->delegateClassFor(row), cache, native),
+                                    messageLabels());
+    if (checkPrevious && row > 0 && messageSettings().senderOnlyWhenChanged)
+        text = withoutRepeatedSender(text, nativeMessageRowText(view, row - 1, false));
+    static int logged = 0;
+    if (logged++ < 8)
+        a11yLog("[message-text] row %d: LINE's text (%d chars)", row, int(native.size()));
+    return text;
+}
 
 // The spoken text of `row` (see the file comment for where it comes from).
 QString rowText(QAbstractItemView *view, int row)
@@ -365,6 +556,8 @@ QString rowText(QAbstractItemView *view, int row)
     const QModelIndex idx = model->index(row, 0, view->rootIndex());
     QObject *data = idx.data(kItemDataRole).value<QObject *>();
     if (inheritsClass(data, "ChatMessageData")) {
+        if (QString native = nativeMessageRowText(view, row); !native.isEmpty())
+            return native;
         // Message delegates may still show text from an earlier row: use the data object only.
         ListRowTextCache *cache = ListRowTextCache::forView(view);
         const ChatMessageFields fields = readChatMessageData(data);
@@ -1171,13 +1364,23 @@ bool isOpenChat(QAbstractItemView *view, QObject *data)
 QString withChatStatus(QAbstractItemView *view, int row, const QString &text, QObject *data)
 {
     QString result = text;
-    if (chatPinned(view, row, data)) {
+    // Right after the name: "Pinned" and the kind of chat (ChatData.type 3 = group, 5 = OpenChat;
+    // nothing tells official accounts apart from friends).
+    QStringList status;
+    if (chatPinned(view, row, data))
+        status << label("Pinned");
+    const int type = data->property("type").toInt();
+    if (type == 3)
+        status << label("Group");
+    else if (type == 5)
+        status << label("OpenChat");
+    if (!status.isEmpty()) {
         const QString name = cleanText(data->property("name").toString());
-        const QString pinned = label("Pinned");
+        const QString added = status.join(QStringLiteral(", "));
         if (!name.isEmpty() && text.startsWith(name))
-            result = name + QStringLiteral(", ") + pinned + text.mid(name.size());
+            result = name + QStringLiteral(", ") + added + text.mid(name.size());
         else
-            result = pinned + QStringLiteral(", ") + text;
+            result = added + QStringLiteral(", ") + text;
     }
     if (isOpenChat(view, data))
         result = label("Selected") + u' ' + result;
@@ -1417,6 +1620,56 @@ void notifyPickerRowLater(QAbstractItemView *view, int row)
 
 // One row of an LcListView. An item stands for a row *position* (its index is resolved on every
 // query), so it stays valid across LINE's frequent model changes.
+// A chat's Photos & videos grid: the items (not the month headings, which span the grid).
+bool isMediaGridItem(const QAbstractItemView *v, const QModelIndex &idx)
+{
+    return v && idx.isValid() && ancestorInheriting(v, "MediaListPanel")
+        && v->visualRect(idx).width() < v->viewport()->width() / 2;
+}
+
+// Where a grid item's check button is, in the view (Windows, at 150 %: 20 px at 154,10 of 189 px).
+QPointF mediaCheckPoint(const QRect &itemRect)
+{
+    return QPointF(itemRect.topLeft()) + fromWindows(QPointF(itemRect.width() * kWindowsScale - 25, 20));
+}
+
+// Whether a Photos & videos item is ticked: its check button is drawn green (unticked: a white tick
+// on grey). 1 ticked, 0 not, -1 not known (not drawn). Cached briefly: VoiceOver asks many times.
+int mediaTickState(QAbstractItemView *v, const QModelIndex &idx, bool fresh = false)
+{
+    struct Seen {
+        int state = -1;
+        QElapsedTimer age;
+    };
+    static QHash<QPair<quintptr, int>, Seen> seen;
+    const QPair<quintptr, int> key(quintptr(v), idx.row());
+    if (auto it = seen.constFind(key); !fresh && it != seen.cend() && it->age.isValid() && it->age.elapsed() < 400)
+        return it->state;
+    const QRect r = v->visualRect(idx);
+    if (r.isEmpty() || !v->viewport()->rect().intersects(r))
+        return -1;
+    const CaptureResult cap = captureRowRect(v, r);
+    if (cap.skipped)
+        return seen.value(key).state;
+    int state = -1;
+    const QPointF check(r.width() * kWindowsScale - 25, 20); // in the capture's (Windows) coordinates
+    for (const PaintedImage &pi : cap.images) {
+        if (pi.rect.width() < 12 || pi.rect.width() > 40 || !pi.rect.adjusted(-6, -6, 6, 6).contains(check))
+            continue;
+        const QColor c = pi.average;
+        if (!c.isValid())
+            continue;
+        state = c.green() > c.red() + 40 && c.green() > c.blue() + 20 ? 1 : 0;
+        break;
+    }
+    if (seen.size() > 500)
+        seen.clear();
+    Seen &entry = seen[key];
+    entry.state = state;
+    entry.age.start();
+    return state;
+}
+
 class LineAccessibleListItem : public QAccessibleInterface, public QAccessibleActionInterface
 {
 public:
@@ -1477,6 +1730,9 @@ public:
         if (bool checked = false; isPickerRow(m_view, rowData(m_view, m_row), &checked)) {
             st.checkable = true;
             st.checked = checked;
+        } else if (isMediaGridItem(m_view, index())) {
+            st.checkable = true;
+            st.checked = mediaTickState(m_view, index()) == 1;
         }
         auto *list = dynamic_cast<LineAccessibleList *>(parent());
         const int cursor = list ? list->cursorRow() : m_view->currentIndex().row();
@@ -2184,14 +2440,15 @@ void LineAccessibleList::notifyCurrentRow()
 {
     QAbstractItemView *v = view();
     // While the chat list cursor is elsewhere, LINE moving its current row is not the user's doing.
-    if (!v || !v->isVisible() || hasCursor())
+    if (!v || !v->isVisible() || hasCursor() || (v->hasFocus() && preserveChatOpenScroll(v)))
         return;
     const QModelIndex current = v->currentIndex();
     if (!current.isValid())
         return;
     if (v->hasFocus()) {
         m_lastRead = current;
-        v->scrollTo(current);
+        if (!m_selectingVisibleRow)
+            v->scrollTo(current);
         if (QAccessibleInterface *item = itemAt(current.row())) {
             QAccessibleEvent event(item, QAccessible::Focus);
             QAccessible::updateAccessibility(&event);
@@ -2254,6 +2511,54 @@ void LineAccessibleList::focusEdgeRow(bool last)
         }
     }
     makeCurrent(target);
+}
+
+void LineAccessibleList::focusVisibleRowOnBacktab()
+{
+    checkModel();
+    QAbstractItemView *v = view();
+    if (!v)
+        return;
+    const QRect area = v->viewport()->rect();
+    const auto readable = [this](const QModelIndex &idx) {
+        QAccessibleInterface *item = idx.isValid() ? itemAt(idx.row()) : nullptr;
+        return item && !item->text(QAccessible::Name).isEmpty();
+    };
+    QModelIndex target;
+    if (m_lastRead.isValid() && area.intersects(v->visualRect(m_lastRead)) && readable(m_lastRead)) {
+        target = m_lastRead;
+    } else {
+        QModelIndex partlyVisible;
+        for (int y = area.top(), checked = 0; y <= area.bottom() && checked < 8;) {
+            const QModelIndex idx = v->indexAt(QPoint(area.center().x(), y));
+            if (!idx.isValid()) {
+                ++y;
+                continue;
+            }
+            const QRect rect = v->visualRect(idx);
+            y = qMax(y + 1, rect.bottom() + 1);
+            ++checked;
+            if (!readable(idx))
+                continue;
+            if (rect.top() >= area.top() && rect.bottom() <= area.bottom()) {
+                target = idx;
+                break;
+            }
+            if (!partlyVisible.isValid())
+                partlyVisible = idx;
+        }
+        if (!target.isValid())
+            target = partlyVisible;
+    }
+    if (!target.isValid())
+        return;
+    const bool autoScroll = v->hasAutoScroll();
+    const QPointer<QAbstractItemView> guard = v;
+    QScopedValueRollback<bool> selecting(m_selectingVisibleRow, true);
+    v->setAutoScroll(false);
+    v->setCurrentIndex(target);
+    if (guard)
+        guard->setAutoScroll(autoScroll);
 }
 
 bool LineAccessibleList::focusRememberedRow()
@@ -2582,21 +2887,28 @@ bool LineAccessibleList::clickCursorRow()
     return true;
 }
 
-bool LineAccessibleList::openCursorRow()
+bool LineAccessibleList::openCursorRow(bool newWindow)
 {
     QAbstractItemView *v = view();
-    const QPersistentModelIndex idx = m_cursor;
+    QPersistentModelIndex idx = m_cursor;
     m_cursor = QPersistentModelIndex();
+    if (newWindow && !idx.isValid() && v)
+        idx = QPersistentModelIndex(v->currentIndex());
     if (!v || !idx.isValid())
         return false;
     // Nothing to open if it is open already. For chats that is the one in the chat header: LINE's
     // current row also moves on a right click (a row's menu) without opening that chat.
     QObject *data = idx.data(kItemDataRole).value<QObject *>();
-    if (inheritsClass(data, "ChatData") ? isOpenChat(v, data) : idx == QPersistentModelIndex(v->currentIndex()))
+    if (!newWindow && (inheritsClass(data, "ChatData") ? isOpenChat(v, data) : idx == QPersistentModelIndex(v->currentIndex())))
         return false;
-    // A click opens the chat the way LINE expects (setting the current row alone may not).
+    // A click opens the chat the way LINE expects (setting the current row alone may not). With the
+    // chat room hidden a click only selects the row: a double click opens its own window.
     v->scrollTo(idx);
-    sendClick(v->viewport(), QRectF(v->visualRect(idx)).center());
+    const QPointF at = QRectF(v->visualRect(idx)).center();
+    if (newWindow)
+        sendDoubleClick(v->viewport(), at);
+    else
+        sendClick(v->viewport(), at);
     return true;
 }
 
@@ -2629,6 +2941,7 @@ void LineAccessibleList::focusInputWhenOpened(int row)
             if (!window->isActiveWindow())
                 window->activateWindow();
             endListBrowsing();
+            armMessageInputFocus(); // LINE may yet move focus into the messages
             if (!w->hasFocus())
                 w->setFocus(Qt::OtherFocusReason);
             a11yLog("[keyboard] chat opened from the list: focus to its message input after %lld ms",
@@ -3125,8 +3438,22 @@ bool LineAccessibleList::openRowMenu()
     g_profileOffer.index = idx;
     g_profileOffer.side = rowSide(v, row);
     judgeReactions(g_profileOffer, v, row, r, cap);
+    // Keep Memo has no reactions (LINE draws no reaction button there).
+    if (g_profileOffer.reactable && inKeepMemo(v)) {
+        g_profileOffer.reactable = false;
+        g_profileOffer.noReaction = "Keep Memo";
+    }
     g_profileOffer.at.start();
     QList<QPointF> points = messageMenuPoints(cap, scaledRect(r, kWindowsScale));
+    // A voice message reacts on its bubble: its play button first (nothing else is sure to be on it).
+    if (ListRowTextCache *c = cache(); c && c->delegateClassFor(row).contains(QLatin1StringView("Audio"))) {
+        for (const PaintedImage &icon : cap.images) {
+            if (icon.icon == QLatin1StringView("voice") && icon.rect.top() >= -4) {
+                points.prepend(icon.rect.center());
+                break;
+            }
+        }
+    }
     if (points.isEmpty()) // nothing recorded: the middle of the row
         points << QPointF(r.width() / 2.0, r.height() / 2.0) * kWindowsScale;
     tryRowMenu(v, idx, points, 0);
@@ -3219,9 +3546,12 @@ bool fileDialogShown()
 void saveMediaItem(QAbstractItemView *v, const QModelIndex &idx)
 {
     const QRect r = v->visualRect(idx);
-    const QPointF check(r.right() - 24, r.top() + 20);
-    sendHover(v->viewport(), check);
-    sendClick(v->viewport(), check);
+    const QPointF check = mediaCheckPoint(r);
+    // Already ticked (Space): Download saves it with the other ticked items.
+    if (mediaTickState(v, idx, true) != 1) {
+        sendHover(v->viewport(), check);
+        sendClick(v->viewport(), check);
+    }
     QPointer<QWidget> window(v->window());
     QTimer::singleShot(300, window, [window] {
         if (!window)
@@ -3296,8 +3626,86 @@ void clickHoverButton(QAbstractItemView *v, const QModelIndex &idx, const char *
 
 struct PendingMenuChoice {
     QStringList texts;
+    QStringList wordsIn; // an item containing one of these counts too (wording LINE varies)
     QElapsedTimer at;
 } g_menuChoice;
+
+struct PendingMessageCommand {
+    QPointer<QAbstractItemView> source;
+    QPersistentModelIndex row;
+    QStringList labels;
+    QElapsedTimer at;
+    // A plain command, LINE's "Save as...", or Copy for the bridge to save the text.
+    enum Purpose { Command, SaveAs, CopyText } purpose = Command;
+    QString kind;     // the command (Reply ...) or "Text", for what is said
+    QString fileName; // suggested name of the text file
+} g_messageCommand;
+
+void sayCommandUnavailable(const QString &command)
+{
+    const char *const message = command == QLatin1StringView("Reply") ? "This message cannot be replied to."
+        : command == QLatin1StringView("React") ? "This message takes no reactions."
+        : command == QLatin1StringView("Delete") ? "This message cannot be deleted."
+        : command == QLatin1StringView("Unsend") ? "This message cannot be unsent."
+        : command == QLatin1StringView("Translate") ? "This message cannot be translated." : "Not available for this message.";
+    announce(label(message), AnnounceWhen::LineActive);
+}
+
+// Save message: asks where (LINE is sandboxed; the save panel gives it the file) and writes the text.
+void saveTextFile(const QString &fileName, const QString &text)
+{
+    QTimer::singleShot(0, qApp, [fileName, text] {
+        QString name = fileName;
+        name.replace(QLatin1Char('/'), QLatin1Char('-')).replace(QLatin1Char(':'), QLatin1Char('-'));
+        const QString path = QFileDialog::getSaveFileName(QApplication::activeWindow(), label("Save message as text file"),
+                                                          name + QStringLiteral(".txt"), QStringLiteral("*.txt"));
+        if (path.isEmpty())
+            return;
+        QFile file(path);
+        if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate) || file.write(text.toUtf8()) < 0) {
+            announce(label("The message could not be saved: %1").arg(file.errorString()), AnnounceWhen::LineActive);
+            return;
+        }
+        file.close();
+        announce(label("Saved as %1").arg(QFileInfo(path).fileName()), AnnounceWhen::LineActive);
+    });
+}
+
+// LINE's Copy puts the message on the clipboard; the text is taken from there and what the clipboard
+// held before is put back.
+void captureCopiedText(const QString &fileName)
+{
+    QClipboard *clipboard = QGuiApplication::clipboard();
+    auto *backup = new QMimeData;
+    if (const QMimeData *before = clipboard->mimeData()) {
+        for (const QString &format : before->formats())
+            backup->setData(format, before->data(format));
+    }
+    auto done = std::make_shared<bool>(false);
+    auto conn = std::make_shared<QMetaObject::Connection>();
+    auto finish = [clipboard, backup, done, conn, fileName](bool changed) {
+        if (*done)
+            return;
+        *done = true;
+        QObject::disconnect(*conn);
+        const QString text = changed ? clipboard->text() : QString();
+        if (backup->formats().isEmpty()) {
+            clipboard->clear();
+            delete backup;
+        } else {
+            clipboard->setMimeData(backup); // the clipboard owns it now
+        }
+        if (text.isEmpty())
+            announce(label("LINE offers no way to save this message (it may have expired)."), AnnounceWhen::LineActive);
+        else
+            saveTextFile(fileName, text);
+    };
+    *conn = QObject::connect(clipboard, &QClipboard::dataChanged, qApp, [finish] {
+        // LINE may set the text in steps: read it once LINE is done.
+        QTimer::singleShot(50, qApp, [finish] { finish(true); });
+    });
+    QTimer::singleShot(2000, qApp, [finish] { finish(false); });
+}
 
 // The chat's message list in a window showing one (the main window or a popped-out chat).
 QAbstractItemView *visibleMessageList()
@@ -3686,14 +4094,182 @@ bool LineAccessibleList::openReactions(int row, bool remove)
     return true;
 }
 
+bool LineAccessibleList::openMessageCommand(int command)
+{
+    QAbstractItemView *v = view();
+    if (!v || !v->hasFocus() || !v->currentIndex().isValid() || command < 0 || command > 4)
+        return false;
+    if (g_messageCommand.source && g_messageCommand.at.isValid() && g_messageCommand.at.elapsed() < 3000)
+        return true;
+    const QStringList labels[] = {
+        { QStringLiteral("Reply"), QStringLiteral("回覆"), QStringLiteral("回复"), QStringLiteral("回復"), QStringLiteral("返信"), QStringLiteral("ตอบกลับ") },
+        { QStringLiteral("Delete"), QStringLiteral("刪除"), QStringLiteral("删除"), QStringLiteral("削除"), QStringLiteral("ลบ") },
+        { QStringLiteral("Unsend"), QStringLiteral("收回"), QStringLiteral("撤回"), QStringLiteral("送信取消"), QStringLiteral("送信を取り消す"), QStringLiteral("ยกเลิกข้อความ"), QStringLiteral("ยกเลิกการส่ง") },
+        { QStringLiteral("Translate"), QStringLiteral("翻譯"), QStringLiteral("翻译"), QStringLiteral("翻訳"), QStringLiteral("แปล") },
+        // The bridge's own item (addProfileMenuItem()): React, or Remove reaction once the user has reacted.
+        { label("React"), label("Remove reaction") },
+    };
+    static const char *const names[] = { "Reply", "Delete", "Unsend", "Translate", "React" };
+    g_messageCommand = PendingMessageCommand();
+    g_messageCommand.source = v;
+    g_messageCommand.row = v->currentIndex();
+    g_messageCommand.labels = labels[command];
+    g_messageCommand.kind = QString::fromLatin1(names[command]);
+    g_messageCommand.at.start();
+    a11yLog("[message-command] requested %s on row %d", names[command], v->currentIndex().row());
+    if (!openRowMenu()) {
+        g_messageCommand = PendingMessageCommand();
+        return false;
+    }
+    return true;
+}
+
+bool LineAccessibleList::saveMessage()
+{
+    QAbstractItemView *v = view();
+    const int row = cursorRow();
+    if (!v || !v->model() || row < 0)
+        return false;
+    if (g_messageCommand.source && g_messageCommand.at.isValid() && g_messageCommand.at.elapsed() < 3000)
+        return true;
+    const QModelIndex idx = v->model()->index(row, 0, v->rootIndex());
+    v->scrollTo(idx);
+    const ChatMessageFields f = readChatMessageData(idx.data(kItemDataRole).value<QObject *>());
+    ListRowTextCache *cache = ListRowTextCache::forView(v);
+    const QString cls = cache ? cache->delegateClassFor(row) : QString();
+    const auto is = [&cls](const char *marker) { return cls.contains(QLatin1StringView(marker)); };
+    const bool message = !f.senderMid.isEmpty() && !f.id.startsWith(QLatin1Char('l')) && !is("Info") && !is("Date") && !is("UnreadMsg");
+    const QString chat = chatNameFor(v);
+    const QString fileName = (chat.isEmpty() ? QStringLiteral("LINE") : chat) + u' '
+        + QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd HHmm"));
+    const auto unsupported = [] {
+        announce(label("Saving this kind of message is not supported."), AnnounceWhen::LineActive);
+        return true;
+    };
+    PendingMessageCommand::Purpose purpose;
+    if (!message)
+        return unsupported();
+    if (is("Location") || is("Contact")) {
+        // LINE's Copy is for text messages; these are saved as read.
+        QAccessibleInterface *item = itemAt(row);
+        const QString text = item ? item->text(QAccessible::Name) : QString();
+        if (text.isEmpty())
+            return unsupported();
+        saveTextFile(fileName, text);
+        return true;
+    }
+    if (!cleanText(f.text).isEmpty())
+        purpose = PendingMessageCommand::CopyText;
+    else if (is("Image") || is("Video") || is("File") || is("Audio") || is("Compress") || !f.fileName.isEmpty() || !f.mediaPath.isEmpty())
+        purpose = PendingMessageCommand::SaveAs;
+    else
+        return unsupported(); // stickers, calls
+    static const QStringList saveAs = { QStringLiteral("Save as"), QStringLiteral("บันทึกเป็น"), QStringLiteral("名前を付けて保存"),
+                                        QStringLiteral("另存为"), QStringLiteral("另存新檔"), QStringLiteral("另存為") };
+    static const QStringList copy = { QStringLiteral("Copy"), QStringLiteral("คัดลอก"), QStringLiteral("コピー"),
+                                      QStringLiteral("复制"), QStringLiteral("複製") };
+    g_messageCommand = PendingMessageCommand();
+    g_messageCommand.source = v;
+    g_messageCommand.row = idx;
+    g_messageCommand.labels = purpose == PendingMessageCommand::SaveAs ? saveAs : copy;
+    g_messageCommand.purpose = purpose;
+    g_messageCommand.kind = QStringLiteral("Save");
+    g_messageCommand.fileName = fileName;
+    g_messageCommand.at.start();
+    if (v->currentIndex() != idx)
+        v->setCurrentIndex(idx);
+    a11yLog("[save] row %d: %s", row, purpose == PendingMessageCommand::SaveAs ? "LINE's Save as" : "text");
+    if (!openRowMenu()) {
+        g_messageCommand = PendingMessageCommand();
+        announce(label("LINE is busy. Press Command+S again."), AnnounceWhen::LineActive);
+    }
+    return true;
+}
+
+bool LineAccessibleList::toggleMediaTick()
+{
+    QAbstractItemView *v = view();
+    const int row = cursorRow();
+    if (!v || !v->model() || row < 0)
+        return false;
+    const QModelIndex idx = v->model()->index(row, 0, v->rootIndex());
+    if (!isMediaGridItem(v, idx))
+        return false;
+    v->scrollTo(idx);
+    const QPointF check = mediaCheckPoint(v->visualRect(idx));
+    if (!v->viewport()->rect().contains(check.toPoint()))
+        return false;
+    a11yLog("[content] tick item %d", row);
+    sendHover(v->viewport(), check);
+    sendClick(v->viewport(), check);
+    QPointer<QAbstractItemView> guard(v);
+    QTimer::singleShot(200, v, [guard, row] {
+        auto *list = listFor(guard);
+        if (!list || !list->view())
+            return;
+        // The hover made LINE draw "View in chat" over the item.
+        sendLeave(list->view()->viewport());
+        const QModelIndex item = list->view()->model()->index(row, 0, list->view()->rootIndex());
+        a11yLog("[content] item %d ticked: %d", row, mediaTickState(list->view(), item, true));
+        if (QAccessibleInterface *iface = list->itemAt(row)) {
+            QAccessible::State changed;
+            changed.checked = true;
+            QAccessibleStateChangeEvent event(iface, changed);
+            QAccessible::updateAccessibility(&event);
+        }
+    });
+    return true;
+}
+
 QWidget *takePendingMenuChoice(const QList<QWidget *> &items)
 {
-    if (g_menuChoice.texts.isEmpty() || !g_menuChoice.at.isValid() || g_menuChoice.at.elapsed() > 5000)
+    if (g_messageCommand.source) {
+        const PendingMessageCommand command = g_messageCommand;
+        g_messageCommand = PendingMessageCommand(); // consume once; never continue into a confirmation
+        const bool valid = command.at.isValid() && command.at.elapsed() < 3000 && command.row.isValid()
+            && command.row.model() == command.source->model() && command.source->currentIndex() == command.row;
+        if (!valid) {
+            if (command.purpose != PendingMessageCommand::Command)
+                announce(label("LINE offers no way to save this message (it may have expired)."), AnnounceWhen::LineActive);
+            return nullptr;
+        }
+        for (QWidget *item : items) {
+            QAccessibleInterface *iface = QAccessible::queryAccessibleInterface(item);
+            QString text = iface ? cleanText(iface->text(QAccessible::Name)).remove(u'&').trimmed() : QString();
+            while (text.endsWith(u'.') || text.endsWith(QChar(0x2026)))
+                text.chop(1);
+            if (!item->isEnabled() || !command.labels.contains(text.trimmed()))
+                continue;
+            a11yLog("[message-command] activating %s", qUtf8Printable(text));
+            if (command.purpose == PendingMessageCommand::CopyText)
+                captureCopiedText(command.fileName);
+            return item;
+        }
+        // Not offered for this message (Reply in Keep Memo, Unsend on someone else's): the menu is
+        // closed and that is said (left open, it read as if the command had opened the menu).
+        if (!items.isEmpty()) {
+            QPointer<QWidget> menu = items.first()->window();
+            QTimer::singleShot(0, qApp, [menu] {
+                if (menu)
+                    menu->hide();
+            });
+        }
+        if (command.purpose == PendingMessageCommand::Command)
+            sayCommandUnavailable(command.kind);
+        else
+            announce(label("LINE offers no way to save this message (it may have expired)."), AnnounceWhen::LineActive);
+        a11yLog("[message-command] %s unavailable for this row", qPrintable(command.kind));
+        return nullptr;
+    }
+    if ((g_menuChoice.texts.isEmpty() && g_menuChoice.wordsIn.isEmpty()) || !g_menuChoice.at.isValid()
+        || g_menuChoice.at.elapsed() > 5000)
         return nullptr;
     for (QWidget *item : items) {
         QAccessibleInterface *iface = QAccessible::queryAccessibleInterface(item);
         const QString text = iface ? cleanText(iface->text(QAccessible::Name)) : QString();
-        if (g_menuChoice.texts.contains(text)) {
+        const bool word = std::any_of(g_menuChoice.wordsIn.cbegin(), g_menuChoice.wordsIn.cend(),
+                                      [&text](const QString &w) { return text.contains(w, Qt::CaseInsensitive); });
+        if (word || g_menuChoice.texts.contains(text)) {
             g_menuChoice = PendingMenuChoice();
             a11yLog("[content] pressing \"%s\" in the message's menu", qUtf8Printable(text));
             return item;
@@ -3872,6 +4448,20 @@ bool LineAccessibleList::openCursorMenu()
     });
     timer->start();
     return true;
+}
+
+bool LineAccessibleList::openCursorRowInNewWindow()
+{
+    // The chat row menu's "Open in new window", pressed by menuShown() (a double click opens the chat
+    // in the main window while the chat room is shown). Without the item the menu stays open.
+    // ("Open in separate window" on the Mac, "Open in new window" on Windows.)
+    g_menuChoice.wordsIn = { QStringLiteral("window"), QStringLiteral("หน้าต่าง"), QStringLiteral("ウィンドウ"),
+                             QStringLiteral("窗口"), QStringLiteral("視窗") };
+    g_menuChoice.at.start();
+    if (openCursorMenu())
+        return true;
+    g_menuChoice = PendingMenuChoice();
+    return false;
 }
 
 QString LineAccessibleList::recentMessageText(int n)

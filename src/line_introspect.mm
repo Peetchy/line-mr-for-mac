@@ -30,31 +30,44 @@
 namespace line_a11y {
 namespace {
 
-// ---- Reverse-engineered layout of LINE 26.5.0.3975 (arm64) ----------------------------------
-
-constexpr const char *kExpectedShortVersion = "26.5.0";
-constexpr const char *kExpectedBuild = "3975";
+// ---- Reverse-engineered layout of LINE (arm64), one entry per verified build ------------------
 
 // The LcText* widgets are compiled into each executable that uses them: LINE itself and the call
 // helper LineCall.app (same LINE build; identical code, found by comparing the helpers'
 // surroundings instruction by instruction).
 struct LcTextHelpers {
     const char *imageSuffix;
-    uintptr_t helper1; // void *fn1(const void *this_plus_3f0)
+    uintptr_t helper1; // void *fn1(const void *this_plus_painter)
     uintptr_t helper2; // void *fn2(void *p1, bool flag)
 };
-constexpr LcTextHelpers kLcTextHelpers[] = {
-    { "/Contents/MacOS/LINE", 0x1018e31b8, 0x1018e332c },
-    { "/LineCall.app/Contents/MacOS/LineCall", 0x1007707c4, 0x100770938 },
+
+struct LineLayout {
+    const char *shortVersion;
+    const char *build;
+    LcTextHelpers line;
+    LcTextHelpers call;
+    ptrdiff_t lcTextPainter;
+    ptrdiff_t listDelegateData; // LcModelDataObject * of the row being shown
+    ptrdiff_t lcImageSource;    // LcImage: QString source
+    ptrdiff_t chatMessageSenderName; // ChatMessageData: the sender's name as shown
+    ptrdiff_t chatMessageReceipt;    // ChatMessageData: read receipt
+    ptrdiff_t chatMessageDuration;   // ChatMessageData: a voice message's / call's length; 0 = none
 };
 
-constexpr ptrdiff_t kLcTextPainterOffset = 0x3f0;
+constexpr const char *kLineImage = "/Contents/MacOS/LINE";
+constexpr const char *kCallImage = "/LineCall.app/Contents/MacOS/LineCall";
+
+constexpr LineLayout kLayouts[] = {
+    { "26.5.0", "3975", { kLineImage, 0x1018e31b8, 0x1018e332c }, { kCallImage, 0x1007707c4, 0x100770938 },
+      0x3f0, 0x400, 0x420, 0x418, 0x528, 0 },
+    { "26.6.0", "4004", { kLineImage, 0x1018ea7f4, 0x1018ea968 }, { kCallImage, 0x100781d74, 0x100781ee8 },
+      0x410, 0x420, 0x440, 0x430, 0x540, 0x418 },
+};
+
 constexpr ptrdiff_t kLcTextDataOffset = 0x698;
 constexpr ptrdiff_t kLcTextFullTextOffset = 0x68;
 constexpr ptrdiff_t kLcTextDisplayTextOffset = 0x50;
 constexpr ptrdiff_t kLcWidgetToolTipOffset = 0xc0;
-constexpr ptrdiff_t kLcListDelegateDataOffset = 0x400; // LcModelDataObject * of the row being shown
-constexpr ptrdiff_t kLcImageSourceOffset = 0x420;      // LcImage: QString source
 // ChatMessageData QString members (see ChatMessageFields).
 constexpr ptrdiff_t kChatMessageIdOffset = 0x1d8;
 constexpr ptrdiff_t kChatMessageMediaOffset = 0x1f0;
@@ -65,8 +78,6 @@ constexpr ptrdiff_t kChatMessageFileNameOffset = 0x310;
 constexpr ptrdiff_t kChatMessageFileSizeOffset = 0x388;
 constexpr ptrdiff_t kChatMessageFileStatusOffset = 0x3a0;
 constexpr ptrdiff_t kChatMessageTimeOffset = 0x3e8;
-constexpr ptrdiff_t kChatMessageSenderNameOffset = 0x418;
-constexpr ptrdiff_t kChatMessageReceiptOffset = 0x528;
 
 // First five instruction words of each helper, taken from the shipped binary:
 //   sub sp,sp,#0x20; stp x29,x30,[sp,#0x10]; add x29,sp,#0x10; str x0,[sp,#0x8]; ...
@@ -84,6 +95,7 @@ struct OffsetState {
     intptr_t slide = 0;
     uintptr_t helper1 = 0; // absolute addresses (slide applied)
     uintptr_t helper2 = 0;
+    const LineLayout *layout = nullptr;
     QString status;
 };
 
@@ -115,19 +127,20 @@ bool signatureMatches(uintptr_t address, const uint32_t *expected, size_t count)
     return memcmp(actual, expected, count * sizeof(uint32_t)) == 0;
 }
 
-bool findLcTextImage(intptr_t *slide, const LcTextHelpers **helpers)
+// The executable this process runs (LINE or LineCall) and its ASLR slide; *isCall tells which.
+bool findLcTextImage(intptr_t *slide, bool *isCall)
 {
     const uint32_t count = _dyld_image_count();
     for (uint32_t i = 0; i < count; ++i) {
         const char *name = _dyld_get_image_name(i);
         if (!name)
             continue;
-        for (const LcTextHelpers &h : kLcTextHelpers) {
-            if (hasSuffix(name, h.imageSuffix)) {
+        for (const char *suffix : { kLineImage, kCallImage }) {
+            if (hasSuffix(name, suffix)) {
                 if (slide)
                     *slide = _dyld_get_image_vmaddr_slide(i);
-                if (helpers)
-                    *helpers = &h;
+                if (isCall)
+                    *isCall = suffix == kCallImage;
                 return true;
             }
         }
@@ -141,28 +154,35 @@ void computeOffsetState(OffsetState &s)
     s.status = QStringLiteral("disabled: offsets are only valid for the arm64 slice");
     return;
 #else
-    const LcTextHelpers *helpers = nullptr;
-    if (!findLcTextImage(&s.slide, &helpers)) {
+    bool isCall = false;
+    if (!findLcTextImage(&s.slide, &isCall)) {
         s.status = QStringLiteral("disabled: neither LINE nor LineCall executable image found");
         return;
     }
     const QString shortVersion = bundleString(@"CFBundleShortVersionString");
     const QString build = bundleString(@"CFBundleVersion");
-    const bool forced = qEnvironmentVariableIntValue("LINE_A11Y_FORCE_OFFSETS") == 1;
-    if (!forced && (shortVersion != QLatin1StringView(kExpectedShortVersion) || build != QLatin1StringView(kExpectedBuild))) {
-        s.status = QStringLiteral("disabled: LINE %1 (%2) differs from verified %3 (%4)")
-                       .arg(shortVersion, build, QLatin1StringView(kExpectedShortVersion),
-                            QLatin1StringView(kExpectedBuild));
+    const LineLayout *layout = nullptr;
+    for (const LineLayout &candidate : kLayouts) {
+        if (shortVersion == QLatin1StringView(candidate.shortVersion) && build == QLatin1StringView(candidate.build))
+            layout = &candidate;
+    }
+    const bool forced = !layout && qEnvironmentVariableIntValue("LINE_A11Y_FORCE_OFFSETS") == 1;
+    if (forced)
+        layout = &kLayouts[std::size(kLayouts) - 1];
+    if (!layout) {
+        s.status = QStringLiteral("disabled: LINE %1 (%2) is not a verified build").arg(shortVersion, build);
         return;
     }
-    const uintptr_t h1 = helpers->helper1 + s.slide;
-    const uintptr_t h2 = helpers->helper2 + s.slide;
+    const LcTextHelpers &helpers = isCall ? layout->call : layout->line;
+    const uintptr_t h1 = helpers.helper1 + s.slide;
+    const uintptr_t h2 = helpers.helper2 + s.slide;
     if (!signatureMatches(h1, kHelper1Signature, std::size(kHelper1Signature))
         || !signatureMatches(h2, kHelper2Signature, std::size(kHelper2Signature))) {
         s.status = QStringLiteral("disabled: instruction signature mismatch at LcTextPainter helpers");
         return;
     }
     s.available = true;
+    s.layout = layout;
     s.helper1 = h1;
     s.helper2 = h2;
     s.status = QStringLiteral("enabled: LINE %1 (%2), slide 0x%3%4")
@@ -370,6 +390,33 @@ const LabelTranslations kLabels[] = {
     { "Background color", "สีพื้นหลัง", "背景色", "背景颜色", "背景顏色" },
     { "Font", "ฟอนต์", "フォント", "字体", "字型" },
     { "Pinned", "ปักหมุด", "ピン留め", "已置顶", "已置頂" },
+    // Chat kinds in the chat list (ChatData.type 3 / 5; LINE's own words for them).
+    { "Group", "กลุ่ม", "グループ", "群组", "群組" },
+    { "OpenChat", "โอเพนแชท", "オープンチャット", "社群", "社群" },
+    { "Reply to %1: %2", "ตอบกลับ %1: %2", "%1 への返信: %2", "回复 %1：%2", "回覆 %1：%2" },
+    { "Original message: %1", "ข้อความเดิม: %1", "元のメッセージ: %1", "原消息：%1", "原始訊息：%1" },
+    { "Go to the original message: %1", "ไปที่ข้อความต้นฉบับ: %1", "元のメッセージへ移動: %1", "转到原消息:%1", "前往原訊息:%1" },
+    { "1 second", "1 วินาที", "1秒", "1秒", "1秒" },
+    { "%1 seconds", "%1 วินาที", "%1秒", "%1秒", "%1秒" },
+    { "1 minute", "1 นาที", "1分", "1分钟", "1分鐘" },
+    { "%1 minutes", "%1 นาที", "%1分", "%1分钟", "%1分鐘" },
+    { "1 hour", "1 ชั่วโมง", "1時間", "1小时", "1小時" },
+    { "%1 hours", "%1 ชั่วโมง", "%1時間", "%1小时", "%1小時" },
+    // Between the parts of a length ("10 minutes 54 seconds"; Japanese and Chinese write them together).
+    { "{length separator}", " ", "", "", "" },
+    // Message commands (Control+R ..., Command+S).
+    { "This message cannot be replied to.", "ข้อความนี้ตอบกลับไม่ได้", "このメッセージには返信できません。", "无法回复此消息。", "無法回覆此訊息。" },
+    { "This message takes no reactions.", "ข้อความนี้แสดงความรู้สึกไม่ได้", "このメッセージにはリアクションできません。", "此消息无法回应。", "此訊息無法回應。" },
+    { "This message cannot be deleted.", "ข้อความนี้ลบไม่ได้", "このメッセージは削除できません。", "无法删除此消息。", "無法刪除此訊息。" },
+    { "This message cannot be unsent.", "ข้อความนี้ยกเลิกไม่ได้", "このメッセージは送信取消できません。", "无法撤回此消息。", "無法收回此訊息。" },
+    { "This message cannot be translated.", "ข้อความนี้แปลไม่ได้", "このメッセージは翻訳できません。", "无法翻译此消息。", "無法翻譯此訊息。" },
+    { "Not available for this message.", "ใช้กับข้อความนี้ไม่ได้", "このメッセージでは使えません。", "不适用于此消息。", "不適用於此訊息。" },
+    { "Saving this kind of message is not supported.", "บันทึกข้อความประเภทนี้ไม่ได้", "この種類のメッセージは保存できません。", "无法保存此类消息。", "無法儲存此類訊息。" },
+    { "LINE offers no way to save this message (it may have expired).", "LINE ไม่มีวิธีบันทึกข้อความนี้ (อาจหมดอายุแล้ว)", "LINE にはこのメッセージを保存する方法がありません (期限切れの可能性があります)。", "LINE 无法保存此消息（可能已过期）。", "LINE 無法儲存此訊息（可能已過期）。" },
+    { "LINE is busy. Press Command+S again.", "LINE กำลังทำงานอยู่ กด Command+S อีกครั้ง", "LINE が処理中です。もう一度 Command+S を押してください。", "LINE 正忙，请再按一次 Command+S。", "LINE 正忙，請再按一次 Command+S。" },
+    { "Saved as %1", "บันทึกเป็น %1 แล้ว", "%1 として保存しました", "已保存为 %1", "已儲存為 %1" },
+    { "The message could not be saved: %1", "บันทึกข้อความไม่ได้: %1", "メッセージを保存できませんでした: %1", "无法保存消息：%1", "無法儲存訊息：%1" },
+    { "Save message as text file", "บันทึกข้อความเป็นไฟล์ข้อความ", "メッセージをテキストファイルとして保存", "将消息保存为文本文件", "將訊息儲存為文字檔" },
     { "Clear text", "ล้างข้อความ", "テキストをクリア", "清除文本", "清除文字" },
     { "Your nickname in this OpenChat", "ชื่อเล่นของคุณในโอเพนแชท", "このオープンチャットでのニックネーム", "你在此开放聊天中的昵称", "你在此社群中的暱稱" },
     { "Text field", "ช่องข้อความ", "テキスト入力欄", "文本框", "文字欄位" },
@@ -398,7 +445,7 @@ const LabelTranslations kLabels[] = {
     { "Country code %1", "รหัสประเทศ %1", "国番号 %1", "国家代码 %1", "國碼 %1" },
     { "%1 members", "สมาชิก %1 คน", "メンバー %1 人", "%1 名成员", "%1 位成員" },
     { "sent by %1 on %2", "ส่งโดย %1 เมื่อ %2", "%1 が送信、%2", "由 %1 发送于 %2", "由 %1 傳送於 %2" },
-    { "%1 unread", "ยังไม่อ่าน %1", "未読 %1", "%1 条未读", "%1 則未讀" },
+    { "%1 unread messages", "ยังไม่ได้อ่าน %1 ข้อความ", "未読メッセージ %1 件", "%1 条未读消息", "%1 則未讀訊息" },
     { "Photo or sticker", "รูปภาพหรือสติกเกอร์", "写真またはスタンプ", "照片或贴图", "照片或貼圖" },
     { "Photos", "อัลบั้มรูปภาพ", "写真アルバム", "相册", "相簿" },
     { "Sticker", "สติกเกอร์", "スタンプ", "贴图", "貼圖" },
@@ -934,6 +981,22 @@ QWidget *ancestorInheriting(const QWidget *w, const char *className)
     return nullptr;
 }
 
+bool inMentionSuggester(const QWidget *w)
+{
+    return w && (inheritsClass(w, "UserMentionSuggester") || ancestorInheriting(w, "UserMentionSuggester"));
+}
+
+bool mentionSuggesterShown(const QWidget *input)
+{
+    if (!input)
+        return false;
+    for (QWidget *c : input->window()->findChildren<QWidget *>()) {
+        if (inheritsClass(c, "UserMentionSuggester") && c->isVisible())
+            return true;
+    }
+    return false;
+}
+
 // ---- Text extraction ---------------------------------------------------------------------------
 
 QString cleanText(const QString &text)
@@ -972,7 +1035,7 @@ QString extractLcTextString(QWidget *w)
     const auto fn1 = reinterpret_cast<LcTextHelper1>(offsetState().helper1);
     const auto fn2 = reinterpret_cast<LcTextHelper2>(offsetState().helper2);
 
-    const char *painterSlot = reinterpret_cast<const char *>(w) + kLcTextPainterOffset;
+    const char *painterSlot = reinterpret_cast<const char *>(w) + offsetState().layout->lcTextPainter;
     void *slotValue = nullptr;
     if (!safeRead(painterSlot, &slotValue, sizeof(slotValue)) || !slotValue)
         return QString();
@@ -1002,7 +1065,7 @@ QStringList lcTextPainterStrings(QWidget *w)
         return {};
     const auto fn1 = reinterpret_cast<LcTextHelper1>(offsetState().helper1);
     const auto fn2 = reinterpret_cast<LcTextHelper2>(offsetState().helper2);
-    const char *painterSlot = reinterpret_cast<const char *>(w) + kLcTextPainterOffset;
+    const char *painterSlot = reinterpret_cast<const char *>(w) + offsetState().layout->lcTextPainter;
     void *slotValue = nullptr;
     if (!safeRead(painterSlot, &slotValue, sizeof(slotValue)) || !slotValue)
         return {};
@@ -1039,8 +1102,16 @@ ChatMessageFields readChatMessageData(const QObject *data)
     fields.fileSize = read(kChatMessageFileSizeOffset);
     fields.fileStatus = read(kChatMessageFileStatusOffset);
     fields.timeLabel = read(kChatMessageTimeOffset);
-    fields.senderName = read(kChatMessageSenderNameOffset);
-    fields.receipt = read(kChatMessageReceiptOffset);
+    const LineLayout &layout = *offsetState().layout;
+    fields.senderName = read(layout.chatMessageSenderName);
+    fields.receipt = read(layout.chatMessageReceipt);
+    fields.contactMid = read(0x268);
+    if (fields.contactMid.size() != 33)
+        fields.contactMid.clear();
+    if (layout.chatMessageDuration) { // LINE 26.6
+        fields.duration = read(layout.chatMessageDuration);
+        fields.locationTitle = read(0x3d0);
+    }
     return fields;
 }
 
@@ -1048,7 +1119,7 @@ QString lcImageSource(const QWidget *image)
 {
     if (!image || !offsetsAvailable() || !inheritsClass(image, "LcImage"))
         return QString();
-    const QString source = safeReadQString(reinterpret_cast<const char *>(image) + kLcImageSourceOffset);
+    const QString source = safeReadQString(reinterpret_cast<const char *>(image) + offsetState().layout->lcImageSource);
     return isPlausibleText(source) && source.startsWith(QLatin1StringView("image://")) ? source : QString();
 }
 
@@ -1072,7 +1143,7 @@ quintptr lcListDelegateDataPointer(const QWidget *delegate)
     if (!delegate || !offsetsAvailable() || !inheritsClass(delegate, "LcListDelegateWidget"))
         return 0;
     quintptr value = 0;
-    if (!safeRead(reinterpret_cast<const char *>(delegate) + kLcListDelegateDataOffset, &value, sizeof(value)))
+    if (!safeRead(reinterpret_cast<const char *>(delegate) + offsetState().layout->listDelegateData, &value, sizeof(value)))
         return 0;
     return value;
 }
@@ -1456,6 +1527,26 @@ UiLanguage uiLanguage()
         return l;
     }();
     return language;
+}
+
+QString spokenDuration(const QString &clock)
+{
+    static const QRegularExpression pattern(QStringLiteral("^(?:(\\d{1,2}):)?(\\d{1,2}):(\\d{2})$"));
+    const QRegularExpressionMatch m = pattern.match(clock.trimmed());
+    if (!m.hasMatch())
+        return clock;
+    const int total = m.captured(1).toInt() * 3600 + m.captured(2).toInt() * 60 + m.captured(3).toInt();
+    const int hours = total / 3600, minutes = total / 60 % 60, seconds = total % 60;
+    auto part = [](int n, const char *one, const char *many) { return n == 1 ? label(one) : label(many).arg(n); };
+    QStringList parts;
+    if (hours)
+        parts << part(hours, "1 hour", "%1 hours");
+    if (minutes)
+        parts << part(minutes, "1 minute", "%1 minutes");
+    if (seconds || parts.isEmpty())
+        parts << part(seconds, "1 second", "%1 seconds");
+    const QString separator = uiLanguage() == UiLanguage::English ? QStringLiteral(" ") : label("{length separator}");
+    return parts.join(separator);
 }
 
 QString label(const char *english)

@@ -38,6 +38,13 @@ QHash<const QWidget *, int> readingOrderKeys(QWidget *window);
 // LINE pulled it away from.
 void endListBrowsing();
 
+// For 3 s the user is going to the message input (Return in the chat list, Reply): LINE moving focus
+// into the messages is sent on to the input.
+void armMessageInputFocus();
+
+// Return is opening this chat: LINE's place in it (the first unread message) is kept.
+bool preserveChatOpenScroll(const QWidget *list);
+
 // Is the user browsing `list` (focus there, or briefly pulled into the open chat by LINE)?
 bool isBrowsingList(const QWidget *list);
 
@@ -74,7 +81,9 @@ public:
 
     void startWatchdog(int intervalMs);
 
-    void endBrowsing() { m_browsingList = nullptr; }
+    void endBrowsing();
+    // The key as the event filter would treat it; called early by earlyKeyHook().
+    bool keyPressFromHook(QWidget *w, QKeyEvent *key) { return handleKeyPress(w, key); }
     bool browsing(const QWidget *list) const;
     // LINE is pulling focus into the open chat while the user browses a list (the bridge sends it
     // back right away): such focus changes are not reported.

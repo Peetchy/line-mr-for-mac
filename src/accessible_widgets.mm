@@ -332,12 +332,8 @@ bool isChatRoomToggle(const QWidget *w)
 
 QString chatRoomToggleName(const QWidget *w)
 {
-    bool shown = false;
-    for (const QWidget *panel : w->window()->findChildren<QWidget *>()) {
-        if (inheritsClass(panel, "ChatMessagePanel") && panel->isVisible() && panel->width() > 0)
-            shown = true;
-    }
-    return label(shown ? "Show or hide chat room, chat room shown" : "Show or hide chat room, chat room hidden");
+    return label(chatRoomHidden(w->window()) ? "Show or hide chat room, chat room hidden"
+                                             : "Show or hide chat room, chat room shown");
 }
 
 // From the icon's resource name, or, for a clickable LcImage drawn from a pixmap without a known
@@ -511,8 +507,24 @@ bool isDescendant(const QAccessibleInterface *iface, const QWidget *ancestor)
 
 // ---- Classification / factory ------------------------------------------------------------------
 
+// Told by the window's width, not by an open chat: with the room shown but no chat open (after LINE
+// starts) there is no ChatMessagePanel, and the window is still wide. Hidden, the list panel reaches
+// the window's right edge.
+bool chatRoomHidden(const QWidget *window)
+{
+    if (!window || !inheritsClass(window, "AllInOneWindow"))
+        return false;
+    for (const QWidget *panel : window->findChildren<QWidget *>()) {
+        if (inheritsAnyClass(panel, { "MainChatPanel", "MainFriendPanel" }) && panel->isVisible())
+            return panel->mapTo(window, QPoint(panel->width(), 0)).x() >= window->width() - 27;
+    }
+    return false;
+}
+
 WidgetKind classifyWidget(const QWidget *w)
 {
+    if (inMentionSuggester(w))
+        return WidgetKind::None;
     if (!w)
         return WidgetKind::None;
     if (isInputClass(w))
@@ -561,7 +573,17 @@ QAccessibleInterface *lineAccessibleFactory(const QString &key, QObject *object)
     // The photo / video viewer's player (a QQuickWidget, see LineAccessibleQuickWidget).
     if (inheritsClass(w, "QQuickWidget") && inheritsClass(w->window(), "MediaViewerWindow"))
         return new LineAccessibleQuickWidget(w);
+    // The bar above the message input while replying: LINE's own interface for it has no children,
+    // so its Cancel reply button was out of reach. Qt's plain interface exposes the buttons.
+    if (inheritsClass(w, "MessageReplyLayer"))
+        return new QAccessibleWidget(w, QAccessible::Grouping);
     const WidgetKind kind = classifyWidget(w);
+    // A picture holding buttons (the selection bar under Photos & videos) is a container.
+    if (kind == WidgetKind::None && inheritsClass(w, "LcImage") && ancestorInheriting(w, "MediaListPanel")) {
+        const QList<QWidget *> children = w->findChildren<QWidget *>(Qt::FindDirectChildrenOnly);
+        if (std::any_of(children.cbegin(), children.cend(), [](const QWidget *c) { return inheritsClass(c, "LcButton"); }))
+            return new QAccessibleWidget(w, QAccessible::Grouping);
+    }
     if (kind != WidgetKind::None) {
         static QSet<QByteArray> loggedClasses;
         const QByteArray cls = object->metaObject()->className();
@@ -743,10 +765,10 @@ QStringList chatHeaderTexts(const QWidget *w)
     for (QObject *child : panel->children()) {
         if (!child->isWidgetType() || !static_cast<QWidget *>(child)->isVisible())
             continue;
-        // The header is the first visible child.
-        for (QObject *item : child->children()) {
-            auto *text = qobject_cast<QWidget *>(item);
-            if (text && text->isVisible() && inheritsClass(text, "LcText"))
+        // The header is the first visible child. Some LINE versions wrap the name and member count
+        // in a clickable LcButton: searched inside this header only, never the messages.
+        for (QWidget *text : static_cast<QWidget *>(child)->findChildren<QWidget *>()) {
+            if (text->isVisible() && inheritsClass(text, "LcText"))
                 if (const QString t = extractLcTextString(text); !t.isEmpty())
                     texts << t;
         }
@@ -1216,6 +1238,17 @@ QString LineAccessibleButton::computeName() const
     QWidget *w = widget();
     if (QString name = explicitAccessibleName(w); !name.isEmpty())
         return name;
+    // The reply bar's full-width button scrolls the chat to the message being replied to.
+    if (QWidget *bar = w->parentWidget(); bar && inheritsClass(bar, "MessageReplyLayer") && iconSource(w).isEmpty()) {
+        QStringList texts;
+        for (QObject *child : bar->children()) {
+            if (child->isWidgetType() && inheritsClass(child, "LcText") && !static_cast<QWidget *>(child)->isHidden()) {
+                if (const QString text = extractLcTextString(static_cast<QWidget *>(child)); !text.isEmpty())
+                    texts << text;
+            }
+        }
+        return label("Go to the original message: %1").arg(texts.join(QLatin1StringView(", ")));
+    }
     if (QString text = stringProp(w, "text"); !text.isEmpty())
         return text;
     if (QString children = collectVisibleChildTexts(w, QStringLiteral(" ")); !children.isEmpty())
@@ -1385,6 +1418,22 @@ void LineAccessibleButton::press()
     markUserActivity();
     QWidget *w = widget();
     QPointer<QWidget> guard(w);
+    // Cancel reply: LINE hides the bar and Qt moves focus to the next control; the user was about to
+    // type, so the message input gets it.
+    if (QWidget *bar = w->parentWidget(); bar && inheritsClass(bar, "MessageReplyLayer")
+        && iconSource(w).contains(QLatin1StringView("reply-layer-close"))) {
+        QPointer<QWidget> window(w->window());
+        QTimer::singleShot(150, window, [window] {
+            if (!window)
+                return;
+            for (QWidget *input : window->findChildren<QWidget *>()) {
+                if (isMessageInput(input) && input->isVisible()) {
+                    input->setFocus(Qt::OtherFocusReason);
+                    break;
+                }
+            }
+        });
+    }
     // The text profile editor's colours: LINE redraws the mark of the chosen one.
     if (isColorChoice(w)) {
         QTimer::singleShot(400, w, [guard] {
@@ -1624,6 +1673,72 @@ QString LineAccessibleInput::plainText() const
     return QString();
 }
 
+namespace {
+
+// An @ mention in a text field: its document position and how it is read ("@Moss").
+struct InputMention {
+    int position;
+    QString label;
+};
+
+// LINE's @ mentions are object characters (U+FFFC) whose format carries the member: UserProperty + 6
+// the mid, + 7 and + 9 the name.
+QList<InputMention> inputMentions(const QTextDocument *doc)
+{
+    QList<InputMention> mentions;
+    for (QTextBlock block = doc->begin(); block.isValid(); block = block.next()) {
+        for (auto it = block.begin(); !it.atEnd(); ++it) {
+            const QTextFragment f = it.fragment();
+            const QString text = f.text();
+            if (!text.contains(QChar::ObjectReplacementCharacter))
+                continue;
+            const QTextCharFormat format = f.charFormat();
+            QString name = format.stringProperty(QTextFormat::UserProperty + 9);
+            if (name.isEmpty())
+                name = format.stringProperty(QTextFormat::UserProperty + 7);
+            if (name.isEmpty())
+                continue;
+            for (int i = 0; i < text.size(); ++i) {
+                if (text.at(i) == QChar::ObjectReplacementCharacter)
+                    mentions.append({ f.position() + i, QLatin1Char('@') + name });
+            }
+        }
+    }
+    return mentions;
+}
+
+} // namespace
+
+int LineAccessibleInput::toExposed(int position) const
+{
+    QTextEdit *te = textEdit();
+    if (!te)
+        return position;
+    int shift = 0;
+    for (const InputMention &m : inputMentions(te->document())) {
+        if (m.position >= position)
+            break;
+        shift += int(m.label.size()) - 1;
+    }
+    return position + shift;
+}
+
+int LineAccessibleInput::toDocument(int offset) const
+{
+    QTextEdit *te = textEdit();
+    if (!te)
+        return offset;
+    int shift = 0;
+    for (const InputMention &m : inputMentions(te->document())) {
+        if (offset <= m.position + shift)
+            break;
+        if (offset < m.position + shift + m.label.size())
+            return m.position; // inside the spelled-out mention: before it
+        shift += int(m.label.size()) - 1;
+    }
+    return offset - shift;
+}
+
 QString LineAccessibleInput::exposedText() const
 {
     if (isMasked()) {
@@ -1632,7 +1747,13 @@ QString LineAccessibleInput::exposedText() const
             return QString();
         return QString(plainText().size(), kMaskChar);
     }
-    return plainText();
+    QString text = plainText();
+    if (QTextEdit *te = textEdit()) {
+        const QList<InputMention> mentions = inputMentions(te->document());
+        for (auto it = mentions.crbegin(); it != mentions.crend(); ++it)
+            text.replace(it->position, 1, it->label);
+    }
+    return text;
 }
 
 void *LineAccessibleInput::interface_cast(QAccessible::InterfaceType t)
@@ -1748,8 +1869,8 @@ void LineAccessibleInput::selection(int selectionIndex, int *startOffset, int *e
     } else if (QTextEdit *te = textEdit()) {
         const QTextCursor c = te->textCursor();
         if (c.hasSelection()) {
-            *startOffset = c.selectionStart();
-            *endOffset = c.selectionEnd();
+            *startOffset = toExposed(c.selectionStart());
+            *endOffset = toExposed(c.selectionEnd());
         }
     }
 }
@@ -1792,8 +1913,8 @@ void LineAccessibleInput::setSelection(int selectionIndex, int startOffset, int 
         le->setSelection(startOffset, endOffset - startOffset);
     } else if (QTextEdit *te = textEdit()) {
         QTextCursor c(te->document());
-        c.setPosition(startOffset);
-        c.setPosition(endOffset, QTextCursor::KeepAnchor);
+        c.setPosition(toDocument(startOffset));
+        c.setPosition(toDocument(endOffset), QTextCursor::KeepAnchor);
         te->setTextCursor(c);
     }
 }
@@ -1803,7 +1924,7 @@ int LineAccessibleInput::cursorPosition() const
     if (QLineEdit *le = lineEdit())
         return le->cursorPosition();
     if (QTextEdit *te = textEdit())
-        return te->textCursor().position();
+        return toExposed(te->textCursor().position());
     return 0;
 }
 
@@ -1814,7 +1935,7 @@ void LineAccessibleInput::setCursorPosition(int position)
         le->setCursorPosition(position);
     } else if (QTextEdit *te = textEdit()) {
         QTextCursor c = te->textCursor();
-        c.setPosition(position);
+        c.setPosition(toDocument(position));
         te->setTextCursor(c);
     }
 }
@@ -1830,7 +1951,7 @@ QString LineAccessibleInput::text(int startOffset, int endOffset) const
 int LineAccessibleInput::characterCount() const
 {
     if (QTextEdit *te = textEdit())
-        return qMax(0, te->document()->characterCount() - 1);
+        return toExposed(qMax(0, te->document()->characterCount() - 1));
     return int(exposedText().size());
 }
 
@@ -1854,13 +1975,14 @@ QRect LineAccessibleInput::characterRect(int offset) const
         return QRect(le->mapToGlobal(local.topLeft()), local.size());
     }
     if (QTextEdit *te = textEdit()) {
+        const int position = toDocument(qBound(0, offset, characterCount()));
         QTextCursor c(te->document());
-        c.setPosition(qBound(0, offset, characterCount()));
+        c.setPosition(position);
         const QRect caret = te->cursorRect(c);
         const QString all = plainText();
         const QFontMetrics fm(c.charFormat().font());
-        const int width = offset >= 0 && offset < all.size() && all.at(offset) != u'\n'
-            ? fm.horizontalAdvance(all.at(offset)) : 1;
+        const int width = position < all.size() && all.at(position) != u'\n'
+            ? fm.horizontalAdvance(all.at(position)) : 1;
         const QRect local(caret.x(), caret.y(), qMax(1, width), caret.height());
         return QRect(te->viewport()->mapToGlobal(local.topLeft()), local.size());
     }
@@ -1872,7 +1994,7 @@ int LineAccessibleInput::offsetAtPoint(const QPoint &point) const
     if (QLineEdit *le = lineEdit())
         return le->cursorPositionAt(le->mapFromGlobal(point));
     if (QTextEdit *te = textEdit())
-        return te->cursorForPosition(te->viewport()->mapFromGlobal(point)).position();
+        return toExposed(te->cursorForPosition(te->viewport()->mapFromGlobal(point)).position());
     return -1;
 }
 
@@ -1886,10 +2008,10 @@ void LineAccessibleInput::scrollToSubstring(int startIndex, int endIndex)
     } else if (QTextEdit *te = textEdit()) {
         const QTextCursor keep = te->textCursor();
         QTextCursor c(te->document());
-        c.setPosition(qBound(0, endIndex, characterCount()));
+        c.setPosition(toDocument(qBound(0, endIndex, characterCount())));
         te->setTextCursor(c);
         te->ensureCursorVisible();
-        c.setPosition(qBound(0, startIndex, characterCount()));
+        c.setPosition(toDocument(qBound(0, startIndex, characterCount())));
         te->setTextCursor(c);
         te->ensureCursorVisible();
         te->setTextCursor(keep);
@@ -1915,9 +2037,9 @@ QList<int> LineAccessibleInput::visualLineStarts() const
         const QTextLayout *layout = block.layout();
         const int lines = layout ? layout->lineCount() : 0;
         if (lines == 0)
-            starts.append(block.position());
+            starts.append(toExposed(block.position()));
         for (int i = 0; i < lines; ++i)
-            starts.append(block.position() + layout->lineAt(i).textStart());
+            starts.append(toExposed(block.position() + layout->lineAt(i).textStart()));
     }
     return starts;
 }
@@ -1997,8 +2119,8 @@ void LineAccessibleInput::replaceText(int startOffset, int endOffset, const QStr
         if (te->isReadOnly())
             return;
         QTextCursor c(te->document());
-        c.setPosition(startOffset);
-        c.setPosition(endOffset, QTextCursor::KeepAnchor);
+        c.setPosition(toDocument(startOffset));
+        c.setPosition(toDocument(endOffset), QTextCursor::KeepAnchor);
         c.insertText(text);
         te->setTextCursor(c);
     }

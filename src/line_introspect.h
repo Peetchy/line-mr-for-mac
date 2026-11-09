@@ -1,4 +1,4 @@
-// Introspection helpers for LINE's custom Lc* widgets (arm64 slice of LINE 26.5.0.3975).
+// Introspection helpers for LINE's custom Lc* widgets (arm64 slice; verified builds are listed in kLayouts).
 //
 // Everything that touches reverse-engineered offsets is gated by offsetsAvailable(), which
 // verifies the LINE build number and the instruction words at the helper addresses before
@@ -53,6 +53,10 @@ bool inheritsClass(const QObject *object, const char *className);
 bool inheritsAnyClass(const QObject *object, std::initializer_list<const char *> classNames);
 // Nearest ancestor (excluding `w`) whose class or superclass is `className`.
 QWidget *ancestorInheriting(const QWidget *w, const char *className);
+// LINE's @ mention suggestions (UserMentionSuggester) or a widget inside them: left to LINE.
+bool inMentionSuggester(const QWidget *w);
+// The window of the message input `input` shows LINE's @ mention suggestions.
+bool mentionSuggesterShown(const QWidget *input);
 
 // --- Text extraction ------------------------------------------------------------------------
 
@@ -81,6 +85,9 @@ struct ChatMessageFields {
     QString timeLabel;    // +0x3e8 time as shown ("7:22 PM"); the date on date separators
     QString senderName;   // +0x418 sender name as shown
     QString receipt;      // +0x528 "Read" / "Read 3" on sent messages
+    QString locationTitle; // a location's place name (LINE 26.6)
+    QString contactMid;   // a shared contact's LINE id
+    QString duration;     // a voice message's / call's length ("00:07"; LINE 26.6)
 };
 ChatMessageFields readChatMessageData(const QObject *data);
 
@@ -163,5 +170,7 @@ UiLanguage uiLanguage();
 
 // Bridge-generated label in LINE's UI language ("Photo" -> "รูปภาพ"); English if not translated.
 QString label(const char *english);
+// A length in words: "00:07" -> "7 seconds", "10:54" -> "10 minutes 54 seconds"; other text unchanged.
+QString spokenDuration(const QString &clock);
 
 } // namespace line_a11y

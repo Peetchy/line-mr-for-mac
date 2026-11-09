@@ -151,6 +151,9 @@ public:
     // Coming back to the messages with Tab / Shift+Tab: makes the row the user last read current
     // again. False (nothing changed) if there is none in this chat (LINE gives each chat a new model).
     bool focusRememberedRow();
+    // Shift+Tab from the message input: stays where the chat is scrolled to (the message read last if
+    // still on screen, else the first message on screen).
+    void focusVisibleRowOnBacktab();
     // Up / Down / PageUp / PageDown in the message list: the previous / next row with text (a page:
     // about a screen further). Returns false for other keys.
     bool stepRow(int key);
@@ -160,7 +163,9 @@ public:
     // the row under it. Returns false for other keys.
     bool moveCursor(int key);
     // Clicks the row under the cursor if it is not LINE's current one; false if there is nothing to open.
-    bool openCursorRow();
+    bool openCursorRow(bool newWindow = false);
+    // Shift+Return in the chat list: the row menu's "Open in new window" for the row under the cursor.
+    bool openCursorRowInNewWindow();
     // The chat at `row` of the chat list is being opened: once LINE shows it beside the list, the
     // keyboard goes to its message input (user request). Gives up after 5 s or when the user moves
     // focus to another window or field meanwhile.
@@ -180,9 +185,18 @@ public:
     // Space / Enter in a picker list (Share with...): ticks or unticks the current row the way a
     // click does. False if the row is not a picker row.
     bool toggleCursorRow();
+    // Space in a chat's Photos & videos grid: ticks or unticks the item with its check button; LINE
+    // then shows its selection bar. False for other lists and for month headings.
+    bool toggleMediaTick();
     // The menu of the message the user is on (right-clicks its bubble; if LINE shows the chat
     // background's menu instead, tries the message's other parts). False if no point can be placed.
     bool openRowMenu();
+    // Message commands: 0 Reply, 1 Delete, 2 Unsend, 3 Translate, 4 React (LINE's own item of the
+    // message's menu; said so if the message has none).
+    bool openMessageCommand(int command);
+    // Command+S on a message: LINE's Save as for media and files, a .txt file for text, locations and
+    // contacts; stickers, calls, dates and notices cannot be saved.
+    bool saveMessage();
     // The menu of the chat / friend list row under the cursor (not of LINE's current row).
     bool openCursorMenu();
     // The text of the `n`-th newest message with text (1 = newest), or "" if there is none.
@@ -250,6 +264,7 @@ private:
     QPersistentModelIndex m_cursor;
     // The message row last read while the list had focus (focusRememberedRow()).
     QPersistentModelIndex m_lastRead;
+    bool m_selectingVisibleRow = false;
     qint64 m_modelLoadedAt = 0;
 };
 

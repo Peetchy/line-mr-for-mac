@@ -56,7 +56,7 @@ int main(int argc, char **argv)
     QTimer::singleShot(1500, &app, [&] {
         QAccessibleInterface *iface = QAccessible::queryAccessibleInterface(edit);
         check(iface != nullptr, "stock QLineEdit interface still available");
-        check(QAccessible::installUpdateHandler(nullptr) == nullptr, "no foreign update handler installed");
+        check(QAccessible::installUpdateHandler(nullptr) != nullptr, "the bridge's filtering update handler is installed");
         app.quit();
     });
     app.exec();
