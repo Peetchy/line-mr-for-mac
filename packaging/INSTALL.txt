@@ -3,7 +3,7 @@ LINE MR: ส่วนเสริม VoiceOver สำหรับ LINE บน Ma
 
 สิ่งที่ต้องมี
 - Mac ชิป Apple Silicon (M1 ขึ้นไป) และ macOS 14 ขึ้นไป
-- LINE จาก Mac App Store (ทดสอบกับ LINE 26.5.0)
+- LINE จาก Mac App Store (ทดสอบกับ LINE 26.6.0)
 
 วิธีติดตั้ง เลือกแบบใดแบบหนึ่ง
 
@@ -59,7 +59,7 @@ English
 
 Requirements
 - A Mac with Apple silicon (M1 or later), macOS 14 or later
-- LINE from the Mac App Store (tested with LINE 26.5.0)
+- LINE from the Mac App Store (tested with LINE 26.6.0)
 
 Install (either way)
 A. Open "Install LINE MR.pkg" and follow the steps (recommended with VoiceOver).

@@ -1,6 +1,8 @@
 #include "transcribe_request.h"
 
+#include "a11y_announce.h"
 #include "a11y_log.h"
+#include "line_introspect.h"
 
 #include <QtCore/QCoreApplication>
 #include <QtCore/QElapsedTimer>
@@ -141,6 +143,28 @@ void waitForFinishedFile(const QString &path, std::function<void(bool)> done)
         done(finished);
     });
     timer->start(250);
+}
+
+void saveThenTranscribe(const QString &target, const QString &kind, int seconds, const QString &title,
+                        std::function<void()> onSaved)
+{
+    // (LINE downloads a video before it asks where to save it.)
+    answerNextSavePanel(target, kind == QLatin1StringView("video") ? 120000 : 20000, [=](bool asked) {
+        if (!asked) {
+            announce(label("LINE did not save the file. Try again."), AnnounceWhen::LineActive);
+            return;
+        }
+        waitForFinishedFile(target, [=](bool saved) {
+            if (!saved) {
+                announce(label("LINE did not save the file. Try again."), AnnounceWhen::LineActive);
+                return;
+            }
+            if (onSaved)
+                onSaved();
+            if (!requestTranscription(target, kind, seconds, title))
+                announce(label("LINE MR.app could not be opened for this."), AnnounceWhen::LineActive);
+        });
+    });
 }
 
 bool requestTranscription(const QString &file, const QString &kind, int seconds, const QString &title)

@@ -21,7 +21,7 @@ CALL_A11Y_DIR := $(CACHE_DIR)/jp.naver.line.mac.LineCall/a11y
 CALL_INSTALLED := $(CALL_A11Y_DIR)/platformthemes/libline_a11y.dylib
 
 # Distribution: LINE MR.app (opens LINE with the bridge), an installer package and a disk image.
-VERSION      ?= 0.2.1
+VERSION      ?= 0.3.0
 APP_ID       := io.github.peetchy.line-mr
 APP_NAME     := LINE MR
 APP_BUNDLE   := $(BUILD)/$(APP_NAME).app
@@ -43,7 +43,7 @@ LDFLAGS      := -arch $(ARCH) -mmacosx-version-min=$(MACOS_MIN) -dynamiclib \
                 -framework AppKit -framework Foundation -framework Vision -framework CoreGraphics -framework Carbon \
                 -Wl,-rpath,@executable_path/../Frameworks -Wl,-rpath,$(QT_FW)
 
-SOURCES      := src/a11y_log.mm src/transcribe_request.mm src/a11y_diagnostics.mm src/line_introspect.mm src/accessible_widgets.mm src/accessible_list.mm src/qt_signal_utils.mm src/a11y_update_filter.mm src/text_recognition.mm src/call_launch_hook.mm \
+SOURCES      := src/a11y_log.mm src/keyboard_help.mm src/transcribe_request.mm src/a11y_diagnostics.mm src/line_introspect.mm src/accessible_widgets.mm src/accessible_list.mm src/qt_signal_utils.mm src/a11y_update_filter.mm src/text_recognition.mm src/call_launch_hook.mm \
                 src/text_capture.mm src/a11y_announce.mm src/accessible_quick.mm src/full_text_view.mm src/call_keys.mm src/native_buttons.mm src/navigation_order.mm src/video_controls.mm src/focus_highlight.mm \
                 src/a11y_event_filter.mm src/plugin_main.mm
 HEADERS      := $(wildcard src/*.h)

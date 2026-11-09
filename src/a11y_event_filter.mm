@@ -2,6 +2,7 @@
 
 #include "a11y_diagnostics.h"
 #include "transcribe_request.h"
+#include "keyboard_help.h"
 #include "a11y_log.h"
 #include "a11y_update_filter.h"
 #include "accessible_list.h"
@@ -23,6 +24,7 @@
 #include <QtCore/QRegularExpression>
 #include <QtCore/QSet>
 #include <QtCore/QScopedValueRollback>
+#include <QtCore/QDir>
 #include <QtCore/QTimer>
 #include <QtCore/QUrl>
 #include <QtGui/QAccessible>
@@ -262,6 +264,24 @@ bool saveViewerMedia(QWidget *viewer)
     return false;
 }
 
+// Control+Shift+T in the viewer, or asked for from Photos & videos / Notes.
+void transcribeViewerVideo(QWidget *viewer)
+{
+    const int seconds = viewerVideoSeconds(viewer) > 0 ? qRound(viewerVideoSeconds(viewer)) : -1; // length not shown yet
+    if (!viewerShowsVideo(viewer)) {
+        announce(label("Not a voice message or video."), AnnounceWhen::LineActive);
+        return;
+    }
+    pauseViewerVideo(viewer);
+    const QString folder = bridgeDirectory() + QStringLiteral("transcribe/");
+    QDir().mkpath(folder);
+    const QString target = folder + QStringLiteral("viewer-%1.mp4").arg(QDateTime::currentMSecsSinceEpoch());
+    saveThenTranscribe(target, QStringLiteral("video"), seconds, QString());
+    a11yLog("[transcribe] viewer: having LINE save the video (%d s)", seconds);
+    if (!saveViewerMedia(viewer))
+        stopAwaitingSavePanel();
+}
+
 void viewerShown(QWidget *w)
 {
     // "Save as..." chosen in a post's menu (Notes) just before this window showed: save once the
@@ -280,6 +300,28 @@ void viewerShown(QWidget *w)
             if (QDateTime::currentMSecsSinceEpoch() - at < 15000)
                 saveViewerMedia(viewer);
         });
+    }
+    // "Transcribe" on a video in Photos & videos or Notes opened this window: once its length shows.
+    QFile transcribeRequest(bridgeDirectory() + QStringLiteral("viewer-transcribe-request"));
+    if (transcribeRequest.open(QIODevice::ReadOnly)) {
+        const qint64 at = transcribeRequest.readAll().trimmed().toLongLong();
+        transcribeRequest.close();
+        transcribeRequest.remove();
+        if (QDateTime::currentMSecsSinceEpoch() - at < 15000) {
+            auto tries = std::make_shared<int>(0);
+            auto *timer = new QTimer(w);
+            QObject::connect(timer, &QTimer::timeout, w, [viewer, timer, tries] {
+                if (!viewer || !viewer->isVisible()) {
+                    timer->deleteLater();
+                    return;
+                }
+                if (!viewerShowsVideo(viewer) && ++*tries <= 25)
+                    return;
+                timer->deleteLater();
+                transcribeViewerVideo(viewer);
+            });
+            timer->start(200);
+        }
     }
     // A video starts on the player (Play / Pause, Position, Playback speed), not the thumbnail strip,
     // where Space and the arrows do nothing for the video. Tried until the window is active and the
@@ -953,6 +995,8 @@ QPointer<QWidget> g_chatOpenWindow;
 QElapsedTimer g_chatWindowByKey;
 bool g_openingChatByEnter = false;
 
+QElapsedTimer g_lastKeyPress;
+
 bool editorFocusPending()
 {
     return g_editorFocusTimer.isValid() && g_editorFocusTimer.elapsed() < 3000;
@@ -1519,6 +1563,8 @@ bool callInProgress()
 int commandKeyDigit(const QKeyEvent *key, bool *shift = nullptr)
 {
     const Qt::KeyboardModifiers mods = key->modifiers() & (kAnyModifier | Qt::ShiftModifier);
+    if (mods == (Qt::ControlModifier | Qt::ShiftModifier) && key->nativeVirtualKey() == kVK_ANSI_K)
+        return -1; // the keyboard help, everywhere in LINE
     const bool control = mods == Qt::MetaModifier;
     const bool shiftControl = mods == (Qt::MetaModifier | Qt::ShiftModifier);
     const bool optionCommand = mods == (Qt::ControlModifier | Qt::AltModifier);
@@ -1616,6 +1662,11 @@ void A11yEventFilter::endBrowsing()
 {
     m_browsingList = nullptr;
     g_editorFocusTimer.invalidate();
+}
+
+bool keyPressedRecently(int ms)
+{
+    return g_lastKeyPress.isValid() && g_lastKeyPress.elapsed() < ms;
 }
 
 void armMessageInputFocus()
@@ -1862,6 +1913,29 @@ bool A11yEventFilter::eventFilter(QObject *watched, QEvent *event)
                 m_browsingList = nullptr;
                 g_editorFocusTimer.invalidate();
             }
+            // The keyboard stays in the input: VoiceOver is told which member LINE moved to.
+            if (event->type() == QEvent::KeyPress && isMessageInput(w)) {
+                const int pressed = static_cast<QKeyEvent *>(event)->key();
+                if (pressed == Qt::Key_Up || pressed == Qt::Key_Down) {
+                    markUserActivity();
+                    QPointer<QWidget> window(w->window());
+                    QTimer::singleShot(80, w, [window] {
+                        for (QAbstractItemView *list : window ? window->findChildren<QAbstractItemView *>() : QList<QAbstractItemView *>()) {
+                            if (!list->isVisible() || !inMentionSuggester(list) || !list->currentIndex().isValid())
+                                continue;
+                            QObject *member = list->currentIndex().data(Qt::UserRole + 1).value<QObject *>();
+                            QString name = member ? cleanText(member->property("displayName").toString()) : QString();
+                            if (name.isEmpty() && member)
+                                name = cleanText(member->property("name").toString());
+                            if (name.isEmpty())
+                                name = cleanText(list->currentIndex().data(Qt::DisplayRole).toString());
+                            a11yLog("[mention] row %d%s", list->currentIndex().row(), name.isEmpty() ? " has no name" : "");
+                            announce(name);
+                            return;
+                        }
+                    });
+                }
+            }
             return false;
         }
         break;
@@ -1982,7 +2056,7 @@ bool A11yEventFilter::eventFilter(QObject *watched, QEvent *event)
         // The bridge's commands must reach the key press (LINE's shortcuts would take them), and so
         // must the video player's keys (LINE's viewer: Right = next photo, Space).
         auto *key = static_cast<QKeyEvent *>(event);
-        if (isCommandKey(key) || (isVideoWidget(w) && videoWantsShortcut(w, key))
+        if (isKeyboardHelp(w) || isCommandKey(key) || (isVideoWidget(w) && videoWantsShortcut(w, key))
             || (isMessageList(w) && messageCommandOf(key) >= 0)) {
             event->accept();
             return true;
@@ -2047,6 +2121,11 @@ bool A11yEventFilter::eventFilter(QObject *watched, QEvent *event)
 
 bool A11yEventFilter::handleKeyPress(QWidget *w, QKeyEvent *key)
 {
+    // (Not the modifier keys themselves, Caps Lock among them, which can be the VO key; and not
+    // Control+Option: those are VoiceOver's own.)
+    if (!(key->key() >= Qt::Key_Shift && key->key() <= Qt::Key_ScrollLock)
+        && (key->modifiers() & (Qt::MetaModifier | Qt::AltModifier)) != (Qt::MetaModifier | Qt::AltModifier))
+        g_lastKeyPress.start();
     g_chatOpenTimer.invalidate();
     if (key->key() == Qt::Key_Tab || key->key() == Qt::Key_Backtab || key->key() == Qt::Key_Escape)
         g_editorFocusTimer.invalidate(); // the user goes elsewhere
@@ -2060,12 +2139,30 @@ bool A11yEventFilter::handleKeyPress(QWidget *w, QKeyEvent *key)
     }
     if (handleCommandKey(w, key))
         return true;
+    if (handleKeyboardHelpKey(w, key))
+        return true;
+    // Transcribe a video in Photos & videos, in Notes and in LINE's viewer.
+    if (messageCommandOf(key) == 6) {
+        if (isViewerWindow(w->window())) {
+            if (!key->isAutoRepeat())
+                transcribeViewerVideo(w->window());
+            return true;
+        }
+        if (isContentList(w) || isPostList(w)) {
+            if (!key->isAutoRepeat()) {
+                if (LineAccessibleList *list = LineAccessibleList::listFor(w))
+                    list->openVideoForTranscription();
+            }
+            return true;
+        }
+    }
     // Reply, Delete, Unsend, Translate, React and Save on the message read last.
     if (isMessageList(w)) {
         if (const int command = messageCommandOf(key); command >= 0) {
             if (!key->isAutoRepeat()) {
                 markUserActivity();
                 if (LineAccessibleList *list = LineAccessibleList::listFor(w)) {
+                    list->syncToVoiceOverRow();
                     if (command == 6)
                         list->transcribeMessage(list->cursorRow());
                     else if (command == 5)
@@ -2244,6 +2341,8 @@ bool A11yEventFilter::handleKeyPress(QWidget *w, QKeyEvent *key)
         // Messages: never left to LINE. LINE acts on a row it keeps itself, which is not the one read
         // (Return on a sticker opened its package in the store).
         if (messages) {
+            if (!key->isAutoRepeat())
+                list->syncToVoiceOverRow();
             if (!key->isAutoRepeat() && !list->activateMessage())
                 a11yLog("[keyboard] message row %d: nothing to open", list->cursorRow());
             return true;
@@ -2255,6 +2354,8 @@ bool A11yEventFilter::handleKeyPress(QWidget *w, QKeyEvent *key)
     const bool menuKey = key->key() == Qt::Key_Menu
         || (key->key() == Qt::Key_F10 && (key->modifiers() & Qt::ShiftModifier));
     if (list && menuKey && !key->isAutoRepeat() && (messages || isCursorList(w) || isContentList(w) || isPostList(w))) {
+        if (messages)
+            list->syncToVoiceOverRow();
         if (messages ? list->openRowMenu()
             : isContentList(w) || isPostList(w) ? list->openContentMenu() : list->openCursorMenu()) {
             m_cursorMenuKey.start();
@@ -2343,6 +2444,10 @@ bool A11yEventFilter::handleCommandKey(QWidget *w, QKeyEvent *key)
     const int digit = qMax(which, 0);
     const quint32 vk = key->nativeVirtualKey();
     markUserActivity();
+    if (vk == kVK_ANSI_K) {
+        showKeyboardHelp();
+        return true;
+    }
     endListBrowsing();
     // Control+Shift+1 ... 9: read a recent message (1 = newest) without moving.
     if (shiftCommand) {
@@ -2597,7 +2702,7 @@ void A11yEventFilter::handleFocusIn(QWidget *w, Qt::FocusReason reason)
             if (reason == Qt::BacktabFocusReason)
                 list->focusVisibleRowOnBacktab();
             else if (returning)
-                list->focusLastVisibleRow();
+                list->focusLastVisibleRow(!chatSearchShowsResult(w)); // after a search: LINE's match
             else if (!tab || !list->focusRememberedRow())
                 list->focusEdgeRow(true);
         }
@@ -2820,7 +2925,9 @@ bool earlyKeyHook(void **data)
     auto *key = static_cast<QKeyEvent *>(event);
     // The bridge's commands: before any of LINE's filters, which sometimes took them (LINE installs
     // application filters of its own; the bridge's goes back in front only at the next watchdog tick).
-    if (g_filter && (isCommandKey(key) || (isMessageList(input) && messageCommandOf(key) >= 0))) {
+    const bool transcribeThere = messageCommandOf(key) == 6
+        && (isContentList(input) || isPostList(input) || isViewerWindow(input->window()));
+    if (g_filter && (isCommandKey(key) || transcribeThere || (isMessageList(input) && messageCommandOf(key) >= 0))) {
         if (event->type() == QEvent::KeyPress) {
             if (event->spontaneous())
                 markUserActivity();

@@ -42,6 +42,9 @@ void endListBrowsing();
 // into the messages is sent on to the input.
 void armMessageInputFocus();
 
+// A key reached LINE within the last `ms` (VoiceOver's own commands do not).
+bool keyPressedRecently(int ms);
+
 // Return is opening this chat: LINE's place in it (the first unread message) is kept.
 bool preserveChatOpenScroll(const QWidget *list);
 

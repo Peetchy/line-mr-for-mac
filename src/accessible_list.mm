@@ -1462,6 +1462,13 @@ QString paintedListRowText(QAbstractItemView *v, int row)
             bool video = !painted.isEmpty();
             for (const PaintedImage &pi : cap.images) {
                 video = video || pi.icon == QLatin1StringView("video") || pi.icon == QLatin1StringView("voice");
+                // The grid draws a video's mark at the thumbnail's bottom left (36 px at 12,228 of 276,
+                // over a shaded strip; the icon matcher may take it for something else).
+                if (grid) {
+                    const QRectF &ir = pi.rect;
+                    video = video || (pi.alpha && ir.width() >= 24 && ir.width() <= 50 && ir.center().x() < r.width() * kWindowsScale * 0.3
+                                      && ir.center().y() > r.height() * kWindowsScale * 0.65);
+                }
                 // The viewer's strip draws a video's mark itself: a picture at the thumbnail's bottom left.
                 if (viewerStrip) {
                     const QRectF &ir = pi.rect;
@@ -1674,6 +1681,64 @@ int mediaTickState(QAbstractItemView *v, const QModelIndex &idx, bool fresh = fa
     return state;
 }
 
+// The row above the oldest message of a chat, for VoiceOver (LineAccessibleList::offersOlder()):
+// VoiceOver reading it means it has moved past the oldest message.
+class LineAccessibleOlderItem : public QAccessibleInterface
+{
+public:
+    explicit LineAccessibleOlderItem(QAbstractItemView *view) : m_view(view) {}
+    bool isValid() const override { return m_view; }
+    QObject *object() const override { return nullptr; }
+    QWindow *window() const override { return m_view ? m_view->window()->windowHandle() : nullptr; }
+    QAccessibleInterface *parent() const override { return QAccessible::queryAccessibleInterface(m_view.data()); }
+    QAccessibleInterface *child(int) const override { return nullptr; }
+    int childCount() const override { return 0; }
+    int indexOfChild(const QAccessibleInterface *) const override { return -1; }
+    QAccessibleInterface *childAt(int, int) const override { return nullptr; }
+    void setText(QAccessible::Text, const QString &) override {}
+    QAccessible::Role role() const override { return QAccessible::StaticText; }
+    QAccessible::State state() const override { return QAccessible::State(); }
+    QRect rect() const override
+    {
+        if (!m_view)
+            return QRect();
+        return QRect(m_view->viewport()->mapToGlobal(QPoint(0, 0)), QSize(m_view->viewport()->width(), 4));
+    }
+    QString text(QAccessible::Text t) const override
+    {
+        if (t != QAccessible::Name)
+            return QString();
+        nameAsked();
+        return label("Loading older messages");
+    }
+
+private:
+    // VoiceOver asks a row's name several times at once when its cursor lands on it, and not while
+    // it reads the rows around it (measured 2026-11-09). Right after a key the keyboard focus has
+    // moved and VoiceOver looks over the list the same way (a VoiceOver command is no key to LINE).
+    void nameAsked() const
+    {
+        if (!m_nameAt.isValid() || m_nameAt.elapsed() > 300) {
+            m_askedTimes = 0;
+            m_afterKey = keyPressedRecently(800);
+        }
+        m_nameAt.start();
+        if (++m_askedTimes != 2 || m_afterKey)
+            return;
+        // Deferred: this arrives inside a synchronous Cocoa accessibility request.
+        QPointer<QAbstractItemView> view = m_view;
+        QMetaObject::invokeMethod(view, [view] {
+            if (LineAccessibleList *list = LineAccessibleList::listFor(view))
+                list->loadOlderForVoiceOver();
+        }, Qt::QueuedConnection);
+    }
+
+    QPointer<QAbstractItemView> m_view;
+    mutable QElapsedTimer m_nameAt;
+    mutable int m_askedTimes = 0;
+    mutable bool m_afterKey = false;
+};
+
 class LineAccessibleListItem : public QAccessibleInterface, public QAccessibleActionInterface
 {
 public:
@@ -1709,6 +1774,10 @@ public:
     {
         if (t != QAccessible::Name || !index().isValid())
             return QString();
+        if (auto *list = dynamic_cast<LineAccessibleList *>(parent()))
+            list->noteRowNameAsked(m_row);
+        if (isMediaGridItem(m_view, index()) && mediaTickState(m_view, index()) == 1)
+            return label("Selected") + QStringLiteral(", ") + rowText(m_view, m_row);
         return rowText(m_view, m_row);
     }
 
@@ -2349,6 +2418,8 @@ void LineAccessibleList::connectModel()
     m_modelConnections.clear();
     m_cursor = QPersistentModelIndex();
     m_lastRead = QPersistentModelIndex();
+    m_noOlder = false;
+    m_voiceOverRow = -1;
     m_modelLoadedAt = listClock().elapsed();
     QAbstractItemView *v = view();
     m_model = v ? v->model() : nullptr;
@@ -2469,11 +2540,19 @@ void LineAccessibleList::notifyCurrentRow()
         postAnnouncement(item->text(QAccessible::Name));
 }
 
-void LineAccessibleList::focusLastVisibleRow()
+void LineAccessibleList::focusLastVisibleRow(bool keepLastRead)
 {
     QAbstractItemView *v = view();
     if (!v || !v->model())
         return;
+    // A panel over the list (LINE's translation) can scroll it, or move LINE's own row.
+    if (keepLastRead && m_lastRead.isValid() && m_lastRead.model() == v->model()) {
+        if (v->currentIndex() != m_lastRead)
+            v->setCurrentIndex(m_lastRead);
+        else
+            v->scrollTo(m_lastRead);
+        return;
+    }
     const QModelIndex current = v->currentIndex();
     if (current.isValid() && v->viewport()->rect().intersects(v->visualRect(current)))
         return;
@@ -2497,6 +2576,7 @@ void LineAccessibleList::focusLastVisibleRow()
 
 void LineAccessibleList::focusEdgeRow(bool last)
 {
+    m_voiceOverRow = -1;
     ++m_edgeRequest;
     QAbstractItemView *v = view();
     const int rows = rowCount();
@@ -2581,6 +2661,7 @@ bool LineAccessibleList::focusRememberedRow()
 
 bool LineAccessibleList::stepRow(int key)
 {
+    m_voiceOverRow = -1;
     const quint64 request = ++m_edgeRequest;
     QAbstractItemView *v = view();
     const int rows = rowCount();
@@ -2675,6 +2756,84 @@ void LineAccessibleList::continueEdgeStep(quint64 request, int key, QPersistentM
     });
 }
 
+void LineAccessibleList::loadOlderForVoiceOver()
+{
+    static QElapsedTimer last;
+    QAbstractItemView *v = view();
+    if (!v || !v->isVisible() || m_loadingOlder || !offersOlder() || (last.isValid() && last.elapsed() < 1500))
+        return;
+    int first = -1;
+    // The first real message: LINE makes new ids ("l...") for date rows when it rebuilds them.
+    for (int row = 0; row < qMin(rowCount(), 40) && first < 0; ++row) {
+        const QString id = readChatMessageData(rowData(v, row)).id;
+        if (!id.isEmpty() && !id.startsWith(QLatin1Char('l')) && !rowText(v, row).isEmpty())
+            first = row;
+    }
+    const QString anchorId = first >= 0 ? readChatMessageData(rowData(v, first)).id : QString();
+    if (anchorId.isEmpty())
+        return;
+    last.start();
+    m_loadingOlder = true;
+    a11yLog("[list] VoiceOver went above the oldest message (row %d): asking LINE for older ones", first);
+    // As Up on the oldest message (stepRow()): LINE loads history when a wheel movement crosses the edge.
+    if (QScrollBar *bar = v->verticalScrollBar())
+        bar->setValue(bar->minimum() + qMin(1, bar->maximum() - bar->minimum()));
+    QWidget *viewport = v->viewport();
+    const QPoint pos = viewport->rect().center();
+    QWheelEvent wheel(QPointF(pos), QPointF(viewport->mapToGlobal(pos)), QPoint(), QPoint(0, 120), Qt::NoButton,
+                      Qt::NoModifier, Qt::NoScrollPhase, false);
+    QCoreApplication::sendEvent(viewport, &wheel);
+
+    const QPointer<QAbstractItemView> listView = v;
+    auto attempts = std::make_shared<int>(60);
+    auto *timer = new QTimer(v);
+    QObject::connect(timer, &QTimer::timeout, timer, [=] {
+        auto stop = [timer] { timer->stop(); timer->deleteLater(); };
+        LineAccessibleList *list = listFor(listView);
+        if (!list)
+            return stop();
+        // By message id: LINE may rebuild its rows when it adds older ones (persistent indexes die).
+        int anchorRow = -1;
+        for (int row = 0; row < qMin(list->rowCount(), 400) && anchorRow < 0; ++row) {
+            if (readChatMessageData(rowData(listView, row)).id == anchorId)
+                anchorRow = row;
+        }
+        listView->doItemsLayout();
+        int target = -1;
+        for (int row = anchorRow - 1; row >= 0 && target < 0; --row) {
+            if (!rowText(listView, row).isEmpty())
+                target = row;
+        }
+        if (target < 0 && --*attempts > 0) {
+            if (QScrollBar *bar = listView->verticalScrollBar())
+                bar->setValue(bar->minimum());
+            return;
+        }
+        stop();
+        list->m_loadingOlder = false;
+        if (anchorRow < 0) // another chat by now
+            return;
+        markUserActivity();
+        const bool older = target >= 0;
+        if (!older) {
+            list->m_noOlder = true;
+            QAccessibleEvent changed(listView.data(), QAccessible::ObjectReorder);
+            QAccessible::updateAccessibility(&changed);
+            target = anchorRow;
+            announce(label("No older messages"), AnnounceWhen::LineActive);
+        }
+        a11yLog("[list] older messages: %s; VoiceOver goes to row %d of %d", older ? "loaded" : "none", target, list->rowCount());
+        // VoiceOver follows the keyboard focus: to the newest of the loaded messages.
+        endListBrowsing();
+        if (!listView->window()->isActiveWindow())
+            listView->window()->activateWindow();
+        if (!listView->hasFocus())
+            listView->setFocus(Qt::PopupFocusReason);
+        list->makeCurrent(target);
+    });
+    timer->start(100);
+}
+
 void LineAccessibleList::makeCurrent(int row)
 {
     QAbstractItemView *v = view();
@@ -2722,22 +2881,94 @@ QAccessible::State LineAccessibleList::state() const
     return st;
 }
 
+void LineAccessibleList::noteRowNameAsked(int row)
+{
+    QAbstractItemView *v = view();
+    if (!v || !voiceOverRunning() || !ancestorInheriting(v, "ChatMessageView"))
+        return;
+    if (row != m_nameRow || !m_nameAt.isValid() || m_nameAt.elapsed() > 300) {
+        m_nameRow = row;
+        m_nameTimes = 0;
+        m_nameAfterKey = keyPressedRecently(800);
+    }
+    m_nameAt.start();
+    if (++m_nameTimes != 2 || m_nameAfterKey)
+        return;
+    m_voiceOverRow = row;
+    m_voiceOverId = readChatMessageData(rowData(v, row)).id;
+    static int logged = 0;
+    if (logged++ < 400)
+        a11yLog("[voiceover] on row %d", row);
+}
+
+void LineAccessibleList::syncToVoiceOverRow()
+{
+    QAbstractItemView *v = view();
+    if (!v || !v->model() || m_voiceOverRow < 0)
+        return;
+    int row = -1;
+    if (!m_voiceOverId.isEmpty() && !m_voiceOverId.startsWith(QLatin1Char('l'))) {
+        const int rows = rowCount();
+        // Nearest first: the row has usually moved by what LINE added above it, or not at all.
+        for (int distance = 0; distance < rows && row < 0; ++distance) {
+            for (int candidate : { m_voiceOverRow + distance, m_voiceOverRow - distance }) {
+                if (candidate >= 0 && candidate < rows && readChatMessageData(rowData(v, candidate)).id == m_voiceOverId) {
+                    row = candidate;
+                    break;
+                }
+            }
+        }
+    } else if (m_voiceOverRow < rowCount()) {
+        row = m_voiceOverRow;
+    }
+    if (row < 0)
+        return;
+    const QModelIndex target = v->model()->index(row, 0, v->rootIndex());
+    if (target != v->currentIndex()) {
+        a11yLog("[keyboard] command on VoiceOver's row %d (LINE's current row was %d)", row, v->currentIndex().row());
+        v->setCurrentIndex(target);
+    }
+}
+
+bool LineAccessibleList::offersOlder() const
+{
+    QAbstractItemView *v = view();
+    return v && !m_noOlder && voiceOverRunning() && rowCount() > 0 && ancestorInheriting(v, "ChatMessageView")
+        && !ancestorInheriting(v, "SearchDetailPanel") && !ancestorInheriting(v, "LcListView")
+        && inheritsClass(v->model(), "ChatMessageModel");
+}
+
 int LineAccessibleList::childCount() const
 {
-    return rowCount();
+    return rowCount() + (offersOlder() ? 1 : 0);
 }
 
 QAccessibleInterface *LineAccessibleList::child(int index) const
 {
-    return itemAt(index);
+    if (!offersOlder())
+        return itemAt(index);
+    if (index > 0)
+        return itemAt(index - 1);
+    if (index < 0)
+        return nullptr;
+    // (Key -1 of m_items: deleted with the others; schedulePrune() only drops rows past the end.)
+    if (const QAccessible::Id id = m_items.value(-1)) {
+        if (QAccessibleInterface *item = QAccessible::accessibleInterface(id))
+            return item;
+    }
+    auto *item = new LineAccessibleOlderItem(view());
+    m_items.insert(-1, QAccessible::registerAccessibleInterface(item));
+    return item;
 }
 
 int LineAccessibleList::indexOfChild(const QAccessibleInterface *child) const
 {
+    if (dynamic_cast<const LineAccessibleOlderItem *>(child))
+        return offersOlder() ? 0 : -1;
     const auto *item = dynamic_cast<const LineAccessibleListItem *>(child);
     if (!item || item->parent() != this)
         return -1;
-    return item->row();
+    return item->row() + (offersOlder() ? 1 : 0);
 }
 
 QAccessibleInterface *LineAccessibleList::focusChild() const
@@ -4329,6 +4560,29 @@ bool LineAccessibleList::transcribeMessage(int row)
     return true;
 }
 
+void LineAccessibleList::openVideoForTranscription()
+{
+    QAbstractItemView *v = view();
+    const int row = cursorRow();
+    QAccessibleInterface *item = v && row >= 0 ? itemAt(row) : nullptr;
+    // Items read "Video, ..." and posts "..., Video, ..." / "2 photos, 1 video".
+    if (!item || !item->text(QAccessible::Name).contains(label("Video"), Qt::CaseInsensitive)) {
+        announce(label("Not a voice message or video."), AnnounceWhen::LineActive);
+        return;
+    }
+    QFile request(bridgeDirectory() + QStringLiteral("viewer-transcribe-request"));
+    if (request.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        request.write(QByteArray::number(QDateTime::currentMSecsSinceEpoch()));
+        request.close();
+    }
+    const bool opened = isPostList(v) ? openPostMedia() : clickCursorRow();
+    a11yLog("[transcribe] row %d: video %s in the viewer", row, opened ? "opened" : "could not be opened");
+    if (!opened) {
+        request.remove();
+        announce(label("Not a voice message or video."), AnnounceWhen::LineActive);
+    }
+}
+
 bool LineAccessibleList::toggleMediaTick()
 {
     QAbstractItemView *v = view();
@@ -4353,7 +4607,11 @@ bool LineAccessibleList::toggleMediaTick()
         // The hover made LINE draw "View in chat" over the item.
         sendLeave(list->view()->viewport());
         const QModelIndex item = list->view()->model()->index(row, 0, list->view()->rootIndex());
-        a11yLog("[content] item %d ticked: %d", row, mediaTickState(list->view(), item, true));
+        const int ticked = mediaTickState(list->view(), item, true);
+        a11yLog("[content] item %d ticked: %d", row, ticked);
+        // (VoiceOver says no state for a static text.)
+        if (ticked >= 0)
+            announce(label(ticked ? "Selected" : "Not selected"));
         if (QAccessibleInterface *iface = list->itemAt(row)) {
             QAccessible::State changed;
             changed.checked = true;
@@ -4387,23 +4645,10 @@ QWidget *takePendingMenuChoice(const QList<QWidget *> &items)
             if (command.purpose == PendingMessageCommand::CopyText)
                 captureCopiedText(command.fileName);
             if (command.purpose == PendingMessageCommand::FetchFile) {
-                const QString target = command.fileName, kind = command.kind, title = command.title;
-                const int seconds = command.seconds;
-                answerNextSavePanel(target, kind == QLatin1StringView("video") ? 120000 : 20000, [target, kind, seconds, title](bool asked) {
-                    if (!asked) {
-                        announce(label("LINE did not save the file. Try again."), AnnounceWhen::LineActive);
-                        return;
-                    }
-                    waitForFinishedFile(target, [target, kind, seconds, title](bool saved) {
-                        if (!saved) {
-                            announce(label("LINE did not save the file. Try again."), AnnounceWhen::LineActive);
-                            return;
-                        }
-                        savedForTranscription().insert(QFileInfo(target).completeBaseName());
-                        storeSavedForTranscription();
-                        if (!requestTranscription(target, kind, seconds, title))
-                            announce(label("LINE MR.app could not be opened for this."), AnnounceWhen::LineActive);
-                    });
+                const QString target = command.fileName;
+                saveThenTranscribe(target, command.kind, command.seconds, command.title, [target] {
+                    savedForTranscription().insert(QFileInfo(target).completeBaseName());
+                    storeSavedForTranscription();
                 });
             }
             return item;

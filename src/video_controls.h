@@ -42,5 +42,9 @@ bool isPlayerValueEvent(QAccessibleEvent *event);
 void keepVideoKeyFilterFirst();
 // The video widget got Qt's focus: report the control the bridge's focus is on.
 void videoWidgetFocused(QWidget *quickWidget);
+// The viewer's video: its length in seconds (0: no video shown), and pausing it.
+bool viewerShowsVideo(QWidget *viewer);
+double viewerVideoSeconds(QWidget *viewer);
+void pauseViewerVideo(QWidget *viewer);
 
 } // namespace line_a11y

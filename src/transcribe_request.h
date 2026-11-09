@@ -22,6 +22,11 @@ void stopAwaitingSavePanel();
 // after a minute without it.
 void waitForFinishedFile(const QString &path, std::function<void(bool)> done);
 
+// Answers LINE's next save panel with `target`, waits for the file and hands it over to LINE MR.app;
+// says so if any of that fails. `onSaved` runs once the file is there. Armed before LINE is asked.
+void saveThenTranscribe(const QString &target, const QString &kind, int seconds, const QString &title,
+                        std::function<void()> onSaved = nullptr);
+
 // Hands `file` over to LINE MR.app. False if it could not be asked (LINE MR.app is not installed).
 bool requestTranscription(const QString &file, const QString &kind, int seconds, const QString &title);
 

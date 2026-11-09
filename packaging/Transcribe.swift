@@ -287,6 +287,12 @@ final class TranscribeJob: NSObject, NSWindowDelegate, URLSessionDownloadDelegat
     private var appleTask: SFSpeechRecognitionTask?
     private var whisperProcess: Process?
     private var models: [SpeechModel] = []
+    private var engines: [SpeechEngine] = [.apple]
+    private var selected = 0
+    private var shownLanguages: [(String, String)] = []
+    private let enginePopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let languagePopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let noteLabel = NSTextField(wrappingLabelWithString: "")
 
     init(_ request: TranscribeRequest) { self.request = request }
 
@@ -307,16 +313,11 @@ final class TranscribeJob: NSObject, NSWindowDelegate, URLSessionDownloadDelegat
     // MARK: Choosing
 
     private func begin() {
-        NSApp.activate(ignoringOtherApps: true)
+        // A regular app while the window is open: macOS gives it the keyboard (and VoiceOver) more
+        // reliably than an accessory app, and it can be reached with Command+Tab.
+        NSApp.setActivationPolicy(.regular)
         models = TranscribeStore.loadModels()
-        guard let choice = choose() else { return finishAndQuit() }
-        engine = choice.engine
-        language = choice.language
-        TranscribeStore.lastEngine = engine.id
-        if case .file(let url) = engine { TranscribeStore.lastModelFile = url.path }
-        TranscribeStore.setLastLanguage(language, apple: engine.isApple)
-        showWindow()
-        if case .model(let model) = engine, !model.isDownloaded { startDownload(model) } else { start() }
+        showChooser()
     }
 
     private func languages(apple: Bool) -> [(String, String)] {
@@ -337,8 +338,8 @@ final class TranscribeJob: NSObject, NSWindowDelegate, URLSessionDownloadDelegat
         return "en-US"
     }
 
-    private func choose() -> (engine: SpeechEngine, language: String)? {
-        var engines: [SpeechEngine] = [.apple]
+    private func showChooser() {
+        engines = [.apple]
         var titles = [tr("Apple's speech recognition (nothing to download)", "ระบบรู้จำเสียงของ Apple (ไม่ต้องดาวน์โหลด)")]
         for model in models {
             engines.append(.model(model))
@@ -350,99 +351,102 @@ final class TranscribeJob: NSObject, NSWindowDelegate, URLSessionDownloadDelegat
             engines.append(.file(URL(fileURLWithPath: path)))
             titles.append((path as NSString).lastPathComponent + " (whisper.cpp)")
         }
-        let browseTitle = tr("Browse for a model file…", "เลือกไฟล์โมเดล…")
-
-        let enginePopup = NSPopUpButton(frame: .zero, pullsDown: false)
-        enginePopup.addItems(withTitles: titles + [browseTitle])
+        enginePopup.removeAllItems()
+        enginePopup.addItems(withTitles: titles + [tr("Browse for a model file…", "เลือกไฟล์โมเดล…")])
         enginePopup.setAccessibilityLabel(tr("Speech model", "โมเดลเสียง"))
-        let languagePopup = NSPopUpButton(frame: .zero, pullsDown: false)
+        enginePopup.target = self
+        enginePopup.action = #selector(engineChanged)
         languagePopup.setAccessibilityLabel(tr("Language of the message", "ภาษาของข้อความ"))
-        let note = NSTextField(wrappingLabelWithString: "")
-        note.preferredMaxLayoutWidth = 400
-
-        var selected = engines.firstIndex { $0.id == TranscribeStore.lastEngine } ?? 0
+        languagePopup.target = self
+        languagePopup.action = #selector(languageChanged)
+        selected = engines.firstIndex { $0.id == TranscribeStore.lastEngine } ?? 0
         enginePopup.selectItem(at: selected)
-        var shownLanguages: [(String, String)] = []
-        func refreshLanguages(keep: String?) {
-            let apple = engines[selected].isApple
-            shownLanguages = languages(apple: apple)
-            languagePopup.removeAllItems()
-            languagePopup.addItems(withTitles: shownLanguages.map { $0.1 })
-            let wanted = keep ?? defaultLanguage(apple: apple)
-            languagePopup.selectItem(at: shownLanguages.firstIndex { $0.0 == wanted } ?? 0)
-            refreshNote()
-        }
-        func refreshNote() {
-            var text = ""
-            if engines[selected].isApple {
-                let id = shownLanguages[languagePopup.indexOfSelectedItem].0
-                if SFSpeechRecognizer(locale: Locale(identifier: id))?.supportsOnDeviceRecognition == false {
-                    text = tr("This language is recognised by Apple's servers: the recording is sent to Apple.",
-                              "ภาษานี้ประมวลผลที่เซิร์ฟเวอร์ของ Apple เสียงจะถูกส่งไปยัง Apple")
-                } else {
-                    text = tr("Recognised on this Mac; nothing is sent to the internet.", "ประมวลผลในเครื่องนี้ ไม่มีการส่งข้อมูลออกอินเทอร์เน็ต")
-                }
-            } else {
-                text = tr("Converted on this Mac; nothing is sent to the internet.", "แปลงในเครื่องนี้ ไม่มีการส่งข้อมูลออกอินเทอร์เน็ต")
-            }
-            if request.seconds > 300 && !engines[selected].isApple {
-                text += " " + tr("A long recording may take a while.", "การบันทึกยาวอาจใช้เวลานาน")
-            }
-            note.stringValue = text
-            note.setAccessibilityLabel(text)
-        }
-        let actions = TranscribeChooserActions()
-        actions.onEngine = {
-            let index = enginePopup.indexOfSelectedItem
-            if index == engines.count { // Browse
-                let panel = NSOpenPanel()
-                panel.message = tr("Choose a whisper.cpp model file (ggml .bin)", "เลือกไฟล์โมเดลของ whisper.cpp (ggml .bin)")
-                panel.allowsMultipleSelection = false
-                if panel.runModal() == .OK, let url = panel.url, TranscribeJob.isWhisperModel(url) {
-                    if engines.last.map({ if case .file = $0 { return true } else { return false } }) == true {
-                        engines.removeLast(); enginePopup.removeItem(at: engines.count)
-                    }
-                    engines.append(.file(url))
-                    enginePopup.insertItem(withTitle: url.lastPathComponent + " (whisper.cpp)", at: engines.count - 1)
-                    selected = engines.count - 1
-                } else if panel.url != nil {
-                    alert(tr("Not a whisper.cpp model", "ไม่ใช่โมเดลของ whisper.cpp"),
-                          tr("Choose a ggml .bin file made for whisper.cpp.", "กรุณาเลือกไฟล์ ggml .bin สำหรับ whisper.cpp"))
-                }
-                enginePopup.selectItem(at: selected)
-            } else {
-                selected = index
-            }
-            refreshLanguages(keep: nil)
-        }
-        actions.onLanguage = { refreshNote() }
-        enginePopup.target = actions; enginePopup.action = #selector(TranscribeChooserActions.engineChanged)
-        languagePopup.target = actions; languagePopup.action = #selector(TranscribeChooserActions.languageChanged)
-        refreshLanguages(keep: nil)
+        noteLabel.preferredMaxLayoutWidth = 500
+        refreshLanguages()
 
+        let info = NSTextField(wrappingLabelWithString: [kindName, lengthText(), request.title].filter { !$0.isEmpty }.joined(separator: ", "))
+        info.preferredMaxLayoutWidth = 500
         let grid = NSGridView(views: [
             [NSTextField(labelWithString: tr("Speech model:", "โมเดลเสียง:")), enginePopup],
             [NSTextField(labelWithString: tr("Language:", "ภาษา:")), languagePopup],
         ])
         grid.rowSpacing = 8
-        let stack = NSStackView(views: [grid, note])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 10
-        stack.frame = NSRect(origin: .zero, size: NSSize(width: 460, height: 110))
+        let convert = NSButton(title: tr("Convert", "แปลง"), target: self, action: #selector(chooserConvert))
+        convert.keyEquivalent = "\r"
+        let cancel = NSButton(title: tr("Cancel", "ยกเลิก"), target: self, action: #selector(closeWindow))
+        cancel.keyEquivalent = "\u{1b}"
+        let buttons = NSStackView(views: [convert, cancel])
+        buttons.orientation = .horizontal
 
-        let alertBox = NSAlert()
-        alertBox.messageText = tr("Convert to text", "แปลงเสียงเป็นข้อความ")
-        alertBox.informativeText = [kindName, lengthText(), request.title].filter { !$0.isEmpty }.joined(separator: ", ")
-        alertBox.accessoryView = stack
-        alertBox.addButton(withTitle: tr("Convert", "แปลง"))
-        alertBox.addButton(withTitle: tr("Cancel", "ยกเลิก"))
-        alertBox.layout()
-        alertBox.window.initialFirstResponder = enginePopup
-        NSApp.activate(ignoringOtherApps: true)
-        guard alertBox.runModal() == .alertFirstButtonReturn else { return nil }
-        withExtendedLifetime(actions) {}
-        return (engines[selected], shownLanguages[languagePopup.indexOfSelectedItem].0)
+        let w = makeWindow(title: tr("Convert to text", "แปลงเสียงเป็นข้อความ"), width: 560, height: 240)
+        setContent(of: w, [info, grid, noteLabel, buttons])
+        bringForward(w, focusing: enginePopup)
+    }
+
+    private func refreshLanguages() {
+        let apple = engines[selected].isApple
+        shownLanguages = languages(apple: apple)
+        languagePopup.removeAllItems()
+        languagePopup.addItems(withTitles: shownLanguages.map { $0.1 })
+        let wanted = defaultLanguage(apple: apple)
+        languagePopup.selectItem(at: shownLanguages.firstIndex { $0.0 == wanted } ?? 0)
+        refreshNote()
+    }
+
+    private func refreshNote() {
+        var text: String
+        if engines[selected].isApple {
+            let id = shownLanguages[languagePopup.indexOfSelectedItem].0
+            if SFSpeechRecognizer(locale: Locale(identifier: id))?.supportsOnDeviceRecognition == false {
+                text = tr("This language is recognised by Apple's servers: the recording is sent to Apple.",
+                          "ภาษานี้ประมวลผลที่เซิร์ฟเวอร์ของ Apple เสียงจะถูกส่งไปยัง Apple")
+            } else {
+                text = tr("Recognised on this Mac; nothing is sent to the internet.", "ประมวลผลในเครื่องนี้ ไม่มีการส่งข้อมูลออกอินเทอร์เน็ต")
+            }
+        } else {
+            text = tr("Converted on this Mac; nothing is sent to the internet.", "แปลงในเครื่องนี้ ไม่มีการส่งข้อมูลออกอินเทอร์เน็ต")
+        }
+        if request.seconds > 300 && !engines[selected].isApple {
+            text += " " + tr("A long recording may take a while.", "การบันทึกยาวอาจใช้เวลานาน")
+        }
+        noteLabel.stringValue = text
+    }
+
+    @objc private func engineChanged() {
+        let index = enginePopup.indexOfSelectedItem
+        if index == engines.count { // Browse
+            let panel = NSOpenPanel()
+            panel.message = tr("Choose a whisper.cpp model file (ggml .bin)", "เลือกไฟล์โมเดลของ whisper.cpp (ggml .bin)")
+            panel.allowsMultipleSelection = false
+            if panel.runModal() == .OK, let url = panel.url, TranscribeJob.isWhisperModel(url) {
+                if case .file? = engines.last {
+                    engines.removeLast()
+                    enginePopup.removeItem(at: engines.count)
+                }
+                engines.append(.file(url))
+                enginePopup.insertItem(withTitle: url.lastPathComponent + " (whisper.cpp)", at: engines.count - 1)
+                selected = engines.count - 1
+            } else if panel.url != nil {
+                alert(tr("Not a whisper.cpp model", "ไม่ใช่โมเดลของ whisper.cpp"),
+                      tr("Choose a ggml .bin file made for whisper.cpp.", "กรุณาเลือกไฟล์ ggml .bin สำหรับ whisper.cpp"))
+            }
+            enginePopup.selectItem(at: selected)
+        } else {
+            selected = index
+        }
+        refreshLanguages()
+    }
+
+    @objc private func languageChanged() { refreshNote() }
+
+    @objc private func chooserConvert() {
+        engine = engines[selected]
+        language = shownLanguages[languagePopup.indexOfSelectedItem].0
+        TranscribeStore.lastEngine = engine.id
+        if case .file(let url) = engine { TranscribeStore.lastModelFile = url.path }
+        TranscribeStore.setLastLanguage(language, apple: engine.isApple)
+        showResult()
+        if case .model(let model) = engine, !model.isDownloaded { startDownload(model) } else { start() }
     }
 
     static func isWhisperModel(_ url: URL) -> Bool {
@@ -452,13 +456,63 @@ final class TranscribeJob: NSObject, NSWindowDelegate, URLSessionDownloadDelegat
 
     // MARK: The window
 
-    private func showWindow() {
-        let frame = NSRect(x: 0, y: 0, width: 560, height: 420)
+    private func makeWindow(title: String, width: CGFloat, height: CGFloat) -> TranscribeTextWindow {
+        if let window { window.title = title; return window }
+        let frame = NSRect(x: 0, y: 0, width: width, height: height)
         let w = TranscribeTextWindow(contentRect: frame, styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        w.title = [kindName, request.title].filter { !$0.isEmpty }.joined(separator: ", ")
+        w.title = title
         w.isReleasedWhenClosed = false
         w.delegate = self
         w.onEscape = { [weak w] in w?.performClose(nil) }
+        w.center()
+        window = w
+        return w
+    }
+
+    private func setContent(of w: TranscribeTextWindow, _ views: [NSView]) {
+        let content = NSStackView(views: views)
+        content.orientation = .vertical
+        content.alignment = .leading
+        content.spacing = 10
+        content.edgeInsets = NSEdgeInsets(top: 14, left: 14, bottom: 14, right: 14)
+        content.translatesAutoresizingMaskIntoConstraints = false
+        let holder = NSView(frame: NSRect(origin: .zero, size: w.contentLayoutRect.size))
+        holder.addSubview(content)
+        NSLayoutConstraint.activate([
+            content.leadingAnchor.constraint(equalTo: holder.leadingAnchor),
+            content.trailingAnchor.constraint(equalTo: holder.trailingAnchor),
+            content.topAnchor.constraint(equalTo: holder.topAnchor),
+            content.bottomAnchor.constraint(lessThanOrEqualTo: holder.bottomAnchor),
+        ])
+        w.contentView = holder
+    }
+
+    /// Opened from LINE, which is in front: macOS may not hand over the keyboard at once, so this is
+    /// tried again while the window is not the key window.
+    private func bringForward(_ w: TranscribeTextWindow, focusing control: NSView) {
+        func attempt() {
+            NSApp.activate(ignoringOtherApps: true)
+            NSRunningApplication.current.activate(options: [.activateAllWindows])
+            w.makeKeyAndOrderFront(nil)
+            w.makeFirstResponder(control)
+            NSAccessibility.post(element: control, notification: .focusedUIElementChanged)
+        }
+        attempt()
+        for delay in [0.25, 0.7, 1.5] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                guard w.isVisible, !NSApp.isActive || !w.isKeyWindow else { return }
+                log("transcribe: the window was not in front; trying again")
+                attempt()
+            }
+        }
+    }
+
+    private func showResult() {
+        let w = makeWindow(title: [kindName, request.title].filter { !$0.isEmpty }.joined(separator: ", "), width: 560, height: 420)
+        var frame = w.frame
+        frame.origin.y -= 420 - frame.height
+        frame.size.height = 420
+        w.setFrame(frame, display: true)
 
         progress.style = .bar
         progress.isIndeterminate = true
@@ -484,28 +538,14 @@ final class TranscribeJob: NSObject, NSWindowDelegate, URLSessionDownloadDelegat
         let buttons = NSStackView(views: [copyButton, closeButton])
         buttons.orientation = .horizontal
 
-        let content = NSStackView(views: [statusLabel, progress, scroll, buttons])
-        content.orientation = .vertical
-        content.alignment = .leading
-        content.spacing = 10
-        content.edgeInsets = NSEdgeInsets(top: 14, left: 14, bottom: 14, right: 14)
-        content.translatesAutoresizingMaskIntoConstraints = false
-        w.contentView = NSView(frame: frame)
-        w.contentView!.addSubview(content)
+        setContent(of: w, [statusLabel, progress, scroll, buttons])
         NSLayoutConstraint.activate([
-            content.leadingAnchor.constraint(equalTo: w.contentView!.leadingAnchor),
-            content.trailingAnchor.constraint(equalTo: w.contentView!.trailingAnchor),
-            content.topAnchor.constraint(equalTo: w.contentView!.topAnchor),
-            content.bottomAnchor.constraint(equalTo: w.contentView!.bottomAnchor),
-            scroll.widthAnchor.constraint(equalTo: content.widthAnchor, constant: -28),
-            progress.widthAnchor.constraint(equalTo: content.widthAnchor, constant: -28),
+            scroll.widthAnchor.constraint(equalToConstant: w.contentLayoutRect.width - 28),
+            scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 280),
+            progress.widthAnchor.constraint(equalToConstant: w.contentLayoutRect.width - 28),
         ])
-        textView.frame = NSRect(x: 0, y: 0, width: 530, height: 280)
-        window = w
-        w.center()
-        w.makeKeyAndOrderFront(nil)
-        w.makeFirstResponder(textView)
-        NSApp.activate(ignoringOtherApps: true)
+        textView.frame = NSRect(x: 0, y: 0, width: w.contentLayoutRect.width - 30, height: 280)
+        bringForward(w, focusing: textView)
     }
 
     @objc private func copyText() {
@@ -673,24 +713,23 @@ final class TranscribeJob: NSObject, NSWindowDelegate, URLSessionDownloadDelegat
     }
 }
 
-final class TranscribeChooserActions: NSObject {
-    var onEngine: (() -> Void)?
-    var onLanguage: (() -> Void)?
-    @objc func engineChanged() { onEngine?() }
-    @objc func languageChanged() { onLanguage?() }
-}
-
-/// An accessory app has no menu bar of its own: without these items Command+C / V / A do nothing.
+/// Without these items Command+C / V / A / W do nothing. (The first item is the application menu.)
 func installEditMenu() {
     let main = NSMenu()
+    let appItem = NSMenuItem()
+    main.addItem(appItem)
+    let appMenu = NSMenu()
+    // (Through the window: closing it cancels the work and deletes the file.)
+    appMenu.addItem(withTitle: tr("Quit LINE MR", "ออกจาก LINE MR"), action: #selector(NSWindow.performClose(_:)), keyEquivalent: "q")
+    appItem.submenu = appMenu
     let editItem = NSMenuItem()
     main.addItem(editItem)
-    let edit = NSMenu(title: "Edit")
-    edit.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
-    edit.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
-    edit.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
-    edit.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
-    edit.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+    let edit = NSMenu(title: tr("Edit", "แก้ไข"))
+    edit.addItem(withTitle: tr("Cut", "ตัด"), action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+    edit.addItem(withTitle: tr("Copy", "คัดลอก"), action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+    edit.addItem(withTitle: tr("Paste", "วาง"), action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+    edit.addItem(withTitle: tr("Select All", "เลือกทั้งหมด"), action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+    edit.addItem(withTitle: tr("Close", "ปิด"), action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
     editItem.submenu = edit
     NSApp.mainMenu = main
 }

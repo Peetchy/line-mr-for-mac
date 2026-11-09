@@ -1,17 +1,17 @@
 # Line MR for Mac (Line Mai Roo)
 
-A VoiceOver accessibility bridge for **LINE for macOS** (`/Applications/LINE.app`, 26.5.0.3975, Qt 6.6.3).
+A VoiceOver accessibility bridge for **LINE for macOS** (`/Applications/LINE.app`, 26.6.0.4004, Qt 6.6.3).
 
 ทำให้ผู้ใช้ VoiceOver ใช้ LINE บน Mac ได้ เช่น อ่านปุ่มที่ไม่มีชื่อ รายการแชท ข้อความในห้องแชท (ทั้งข้อความ ไฟล์ รูป และวันที่) และหน้าต่างการโทร พร้อมลดการแจ้งเตือนที่ VoiceOver พูดซ้ำ ๆ โดยไม่ต้องแก้ไฟล์ใน `LINE.app` และไม่ต้องปิด SIP
 
 ## การติดตั้งสำหรับผู้ใช้ / Installation
 
-**เวอร์ชันล่าสุด: [v0.2.1](https://github.com/Peetchy/line-mr-for-mac/releases/tag/v0.2.1)**
+**เวอร์ชันล่าสุด: [v0.3.0](https://github.com/Peetchy/line-mr-for-mac/releases/tag/v0.3.0)**
 
 | ไฟล์ | ลิงก์ดาวน์โหลด |
 |---|---|
-| **DMG (แนะนำ)**: ตัวติดตั้ง ตัวโปรแกรม และวิธีติดตั้ง | [LINE-MR-0.2.1.dmg](https://github.com/Peetchy/line-mr-for-mac/releases/download/v0.2.1/LINE-MR-0.2.1.dmg) |
-| **PKG**: ตัวติดตั้งอย่างเดียว | [LINE-MR-0.2.1.pkg](https://github.com/Peetchy/line-mr-for-mac/releases/download/v0.2.1/LINE-MR-0.2.1.pkg) |
+| **DMG (แนะนำ)**: ตัวติดตั้ง ตัวโปรแกรม และวิธีติดตั้ง | [LINE-MR-0.3.0.dmg](https://github.com/Peetchy/line-mr-for-mac/releases/download/v0.3.0/LINE-MR-0.3.0.dmg) |
+| **PKG**: ตัวติดตั้งอย่างเดียว | [LINE-MR-0.3.0.pkg](https://github.com/Peetchy/line-mr-for-mac/releases/download/v0.3.0/LINE-MR-0.3.0.pkg) |
 | เวอร์ชันทั้งหมด | [Releases](https://github.com/Peetchy/line-mr-for-mac/releases) |
 
 > English summary: download the `.dmg` above, allow it in **System Settings > Privacy & Security > Open Anyway** (it is not signed with an Apple Developer ID), install with `Install LINE MR.pkg` or drag `LINE MR` to Applications, then always open LINE through **LINE MR**. Details in Thai below; an English copy is in the disk image's Read Me.
@@ -20,11 +20,11 @@ A VoiceOver accessibility bridge for **LINE for macOS** (`/Applications/LINE.app
 
 - Mac ชิป Apple Silicon (M1 ขึ้นไป) และ macOS 14 ขึ้นไป
   ตรวจได้ที่เมนู Apple > About This Mac ถ้าบรรทัด Chip ขึ้นว่า Apple M1, M2, M3 หรือใหม่กว่า ใช้ได้ (ถ้าเป็น Intel ยังใช้ไม่ได้)
-- LINE จาก Mac App Store ที่ติดตั้งไว้ที่ Applications (ทดสอบกับ LINE 26.5.0 (3975) ถ้าเป็นเวอร์ชันอื่น LINE MR จะแจ้งเตือนครั้งแรก และบางส่วนอาจอ่านไม่ได้)
+- LINE จาก Mac App Store ที่ติดตั้งไว้ที่ Applications (ทดสอบกับ LINE 26.6.0 (4004) ถ้าเป็นเวอร์ชันอื่น LINE MR จะแจ้งเตือนครั้งแรก และบางส่วนอาจอ่านไม่ได้)
 
 ### ขั้นที่ 1: ดาวน์โหลด
 
-1. กดลิงก์ [LINE-MR-0.2.1.dmg](https://github.com/Peetchy/line-mr-for-mac/releases/download/v0.2.1/LINE-MR-0.2.1.dmg) ในตารางด้านบน หรือเข้าหน้า [Releases](https://github.com/Peetchy/line-mr-for-mac/releases) แล้วเลือกไฟล์ `.dmg` ในหัวข้อ Assets ของเวอร์ชันล่าสุด
+1. กดลิงก์ [LINE-MR-0.3.0.dmg](https://github.com/Peetchy/line-mr-for-mac/releases/download/v0.3.0/LINE-MR-0.3.0.dmg) ในตารางด้านบน หรือเข้าหน้า [Releases](https://github.com/Peetchy/line-mr-for-mac/releases) แล้วเลือกไฟล์ `.dmg` ในหัวข้อ Assets ของเวอร์ชันล่าสุด
 2. ถ้า Safari ถามว่าจะอนุญาตให้ดาวน์โหลดจาก github.com ไหม ให้กด **Allow**
 3. ไฟล์จะอยู่ในโฟลเดอร์ **Downloads** (เปิดด้วย Option+Command+L ใน Finder)
 4. (ไม่บังคับ) ตรวจว่าไฟล์ไม่เสียหาย ด้วยคำสั่งใน Terminal แล้วเทียบกับไฟล์ `SHA256SUMS.txt` ในหน้า Release:
@@ -179,7 +179,7 @@ The plugin returns `nullptr`, so Qt falls back to its built-in theme. Meanwhile 
 ## Requirements
 
 - macOS 14 or later on Apple silicon (arm64)
-- LINE 26.5.0 (3975); on other versions the offset-based features switch themselves off
+- LINE 26.6.0 (4004); on other versions the offset-based features switch themselves off
 - Xcode Command Line Tools (clang, swiftc)
 
 ## Build and run
@@ -223,6 +223,7 @@ The NVDA add-on's Alt keys are Control keys on the Mac (Option+Command, the keys
 
 | Command | Action | การทำงาน |
 |---|---|---|
+| Command+Shift+K | Keyboard help: every LINE MR key, in LINE's language (English, Thai, Japanese, Simplified or Traditional Chinese) | หน้ารายการแป้นพิมพ์ทั้งหมดของ LINE MR ตามภาษาของ LINE (อังกฤษ ไทย ญี่ปุ่น จีนตัวย่อ จีนตัวเต็ม) |
 | Control+1 / 2 / 3 | Friends / Chats / Add friends tab | แท็บเพื่อน / แชท / เพิ่มเพื่อน |
 | Control+C | Chat list (switches to the Chats tab first) | ไปที่รายการแชท (สลับไปแท็บแชทก่อนถ้าจำเป็น) |
 | Control+L | Chat list or friend list | ไปที่รายการแชทหรือรายชื่อเพื่อน |
@@ -288,7 +289,7 @@ width=4
 
 ## Status and limits
 
-- Verified only against LINE 26.5.0 (3975) on arm64.
+- Verified only against LINE 26.6.0 (4004) on arm64.
 - Ported from the Windows version 0.5.5 (2026-11-02) and checked in a logged-in LINE through the accessibility tree and synthesized keys: menus (VO+Shift+M on messages, chat rows, photos, Notes posts), the reaction picker, stickers, Photos & videos, Notes, chat search and the Control keys. Not yet heard with VoiceOver by a user; calls, the video player, sub-menus and the "Pinned" mark still need testing.
 - Stickers, videos, locations and contacts are only recognised once they have been seen on screen. Group sender names and the call window's labels need more testing.
 - This is an unofficial, independent project. It is not affiliated with or endorsed by LY Corporation / LINE.

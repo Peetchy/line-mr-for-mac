@@ -20,6 +20,7 @@
 #pragma once
 
 #include <QtCore/QAbstractItemModel>
+#include <QtCore/QElapsedTimer>
 #include <QtCore/QHash>
 #include <QtCore/QObject>
 #include <QtCore/QPersistentModelIndex>
@@ -145,7 +146,8 @@ public:
     void notifyCurrentRow();
 
     // Makes the newest visible row current (messages start at the bottom).
-    void focusLastVisibleRow();
+    // `keepLastRead`: the message read last, if there is one (back from a menu or LINE's translate panel).
+    void focusLastVisibleRow(bool keepLastRead = true);
     // Makes the first (or last) row that has text current, scrolling it into view.
     void focusEdgeRow(bool last);
     // Coming back to the messages with Tab / Shift+Tab: makes the row the user last read current
@@ -197,9 +199,22 @@ public:
     // Command+S on a message: LINE's Save as for media and files, a .txt file for text, locations and
     // contacts; stickers, calls, dates and notices cannot be saved.
     bool saveMessage();
+    // VoiceOver moved above the oldest message (onto the row offersOlder() adds): LINE loads older
+    // messages, and VoiceOver goes on to the newest of them. VoiceOver asks the app nothing at the
+    // end of a list, so that row is what tells the bridge.
+    void loadOlderForVoiceOver();
+    bool offersOlder() const;
+    // VoiceOver's cursor moves without the keyboard: the message it landed on (the same sign as
+    // LineAccessibleOlderItem) is what commands from the keyboard mean. syncToVoiceOverRow() makes it
+    // LINE's current row; a keyboard step (stepRow(), focusEdgeRow()) forgets it.
+    void noteRowNameAsked(int row);
+    void syncToVoiceOverRow();
     // Control+Shift+T or the menu's "Transcribe": LINE saves the voice message's / video's own file
     // for LINE MR.app, which turns it into text.
     bool transcribeMessage(int row);
+    // In Photos & videos or Notes: a video (or a post with one) is opened in LINE's viewer, whose
+    // bridge code then transcribes it (viewer-transcribe-request).
+    void openVideoForTranscription();
     // The menu of the chat / friend list row under the cursor (not of LINE's current row).
     bool openCursorMenu();
     // The text of the `n`-th newest message with text (1 = newest), or "" if there is none.
@@ -268,6 +283,16 @@ private:
     // The message row last read while the list had focus (focusRememberedRow()).
     QPersistentModelIndex m_lastRead;
     bool m_selectingVisibleRow = false;
+    bool m_loadingOlder = false;
+    bool m_noOlder = false; // LINE had nothing older in this chat
+    // The message VoiceOver is on: its id (LINE rebuilds its rows when messages arrive or older ones
+    // load, which kills persistent indexes), and its row for rows whose id does not last (dates).
+    QString m_voiceOverId;
+    int m_voiceOverRow = -1;
+    int m_nameRow = -1;
+    int m_nameTimes = 0;
+    bool m_nameAfterKey = false;
+    QElapsedTimer m_nameAt;
     qint64 m_modelLoadedAt = 0;
 };
 
