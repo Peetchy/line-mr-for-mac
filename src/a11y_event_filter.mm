@@ -1,6 +1,7 @@
 #include "a11y_EventFilter.h"
 
 #include "a11y_diagnostics.h"
+#include "transcribe_request.h"
 #include "a11y_log.h"
 #include "a11y_update_filter.h"
 #include "accessible_list.h"
@@ -1150,7 +1151,8 @@ void focusChatWindowInputLater()
 }
 
 // Message commands in the message list: 0 Reply (Control+R), 1 Delete (Delete), 2 Unsend (Shift+
-// Delete), 3 Translate (Control+T), 4 React (Control+Shift+R), 5 Save (Command+S). -1 for other keys.
+// Delete), 3 Translate (Control+T), 4 React (Control+Shift+R), 5 Save (Command+S), 6 Transcribe
+// (Control+Shift+T). -1 for other keys.
 // The physical key counts (Thai and other layouts), as for the other commands.
 int messageCommandOf(const QKeyEvent *key)
 {
@@ -1162,6 +1164,8 @@ int messageCommandOf(const QKeyEvent *key)
         return mods == Qt::MetaModifier ? 0 : mods == (Qt::MetaModifier | Qt::ShiftModifier) ? 4 : -1;
     if (vk == kVK_ANSI_T && mods == Qt::MetaModifier)
         return 3;
+    if (vk == kVK_ANSI_T && mods == (Qt::MetaModifier | Qt::ShiftModifier))
+        return 6;
     if (vk == kVK_ANSI_S && mods == Qt::ControlModifier)
         return 5;
     return -1;
@@ -2062,7 +2066,9 @@ bool A11yEventFilter::handleKeyPress(QWidget *w, QKeyEvent *key)
             if (!key->isAutoRepeat()) {
                 markUserActivity();
                 if (LineAccessibleList *list = LineAccessibleList::listFor(w)) {
-                    if (command == 5)
+                    if (command == 6)
+                        list->transcribeMessage(list->cursorRow());
+                    else if (command == 5)
                         list->saveMessage();
                     else
                         list->openMessageCommand(command);
@@ -2473,6 +2479,9 @@ bool A11yEventFilter::handleMenuKey(QWidget *menu, const QKeyEvent *key)
 
 void A11yEventFilter::handleShow(QWidget *w)
 {
+    // (Armed for up to 2 minutes while LINE downloads a video: never to catch a later Save as.)
+    if (w->isWindow() && inheritsClass(w, "AlertWindow"))
+        stopAwaitingSavePanel();
     // Their stops were made focusable the first time; the order may have changed since.
     if (inheritsClass(w, "MessageReplyLayer") || (inheritsClass(w, "LcImage") && ancestorInheriting(w, "MediaListPanel")))
         orderTabStops(w->window());

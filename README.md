@@ -235,6 +235,7 @@ The NVDA add-on's Alt keys are Control keys on the Mac (Option+Command, the keys
 | Delete | In the messages: delete it (LINE asks to confirm) | ในรายการข้อความ: ลบข้อความ (LINE ถามยืนยัน) |
 | Shift+Delete | In the messages: unsend it (LINE asks to confirm) | ในรายการข้อความ: ยกเลิกการส่ง (LINE ถามยืนยัน) |
 | Command+S | In the messages: save it (media and files with LINE's Save as; text, locations and contacts as a .txt file) | ในรายการข้อความ: บันทึกข้อความ (สื่อและไฟล์ผ่าน Save as ของ LINE ส่วนข้อความ ตำแหน่ง และรายชื่อเป็นไฟล์ .txt) |
+| Control+Shift+T | In the messages: turn a voice message or video into text (also in its menu). Choose Apple's speech recognition (the default) or a whisper.cpp model; the choice is remembered | ในรายการข้อความ: แปลงข้อความเสียงหรือวิดีโอเป็นข้อความ (มีในเมนูด้วย) เลือกระบบของ Apple (ค่าเริ่มต้น) หรือโมเดล whisper.cpp และจะจำตัวเลือกล่าสุด |
 | Shift+Return | In the chat list: open the chat in its own window | ในรายการแชท: เปิดแชทในหน้าต่างใหม่ |
 | Control+Shift+1 … 9 | Read a recent message (1 = newest) | อ่านข้อความล่าสุด (1 = ใหม่สุด) |
 | Control+A / Control+D in LINE | Answer / decline an incoming call; during a call Control+D ends it. Without a call they do what they normally do in text fields (start of line / delete) | รับสาย / ปฏิเสธสาย; ระหว่างคุยกด Control+D วางสาย (ถ้าไม่มีสาย ปุ่มทำงานตามปกติในช่องพิมพ์) |

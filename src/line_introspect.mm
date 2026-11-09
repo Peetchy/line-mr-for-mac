@@ -390,6 +390,11 @@ const LabelTranslations kLabels[] = {
     { "Background color", "สีพื้นหลัง", "背景色", "背景颜色", "背景顏色" },
     { "Font", "ฟอนต์", "フォント", "字体", "字型" },
     { "Pinned", "ปักหมุด", "ピン留め", "已置顶", "已置頂" },
+    { "Transcribe voice message", "แปลงเสียงเป็นข้อความ", "ボイスメッセージを文字に起こす", "将语音消息转为文字", "將語音訊息轉為文字" },
+    { "Transcribe video", "ถอดเสียงวิดีโอเป็นข้อความ", "動画の音声を文字に起こす", "将视频语音转为文字", "將影片語音轉為文字" },
+    { "Not a voice message or video.", "ไม่ใช่ข้อความเสียงหรือวิดีโอ", "ボイスメッセージや動画ではありません。", "不是语音消息或视频。", "不是語音訊息或影片。" },
+    { "LINE did not save the file. Try again.", "LINE ไม่ได้บันทึกไฟล์ กรุณาลองอีกครั้ง", "LINE はファイルを保存しませんでした。もう一度お試しください。", "LINE 未保存该文件，请重试。", "LINE 未儲存該檔案，請再試一次。" },
+    { "LINE MR.app could not be opened for this.", "เปิด LINE MR.app เพื่อแปลงเสียงไม่ได้", "このために LINE MR.app を開けませんでした。", "无法为此打开 LINE MR.app。", "無法為此開啟 LINE MR.app。" },
     // Chat kinds in the chat list (ChatData.type 3 / 5; LINE's own words for them).
     { "Group", "กลุ่ม", "グループ", "群组", "群組" },
     { "OpenChat", "โอเพนแชท", "オープンチャット", "社群", "社群" },

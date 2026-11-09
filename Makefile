@@ -43,7 +43,7 @@ LDFLAGS      := -arch $(ARCH) -mmacosx-version-min=$(MACOS_MIN) -dynamiclib \
                 -framework AppKit -framework Foundation -framework Vision -framework CoreGraphics -framework Carbon \
                 -Wl,-rpath,@executable_path/../Frameworks -Wl,-rpath,$(QT_FW)
 
-SOURCES      := src/a11y_log.mm src/a11y_diagnostics.mm src/line_introspect.mm src/accessible_widgets.mm src/accessible_list.mm src/qt_signal_utils.mm src/a11y_update_filter.mm src/text_recognition.mm src/call_launch_hook.mm \
+SOURCES      := src/a11y_log.mm src/transcribe_request.mm src/a11y_diagnostics.mm src/line_introspect.mm src/accessible_widgets.mm src/accessible_list.mm src/qt_signal_utils.mm src/a11y_update_filter.mm src/text_recognition.mm src/call_launch_hook.mm \
                 src/text_capture.mm src/a11y_announce.mm src/accessible_quick.mm src/full_text_view.mm src/call_keys.mm src/native_buttons.mm src/navigation_order.mm src/video_controls.mm src/focus_highlight.mm \
                 src/a11y_event_filter.mm src/plugin_main.mm
 HEADERS      := $(wildcard src/*.h)
@@ -122,14 +122,29 @@ check-load: install $(BUILD)/plugin_load_check
 
 app: $(APP_STAMP)
 
+# whisper.cpp's command line program for LINE MR.app (the voice message option besides Apple's).
+WHISPER_TAG ?= v1.9.5
+CMAKE ?= cmake
+WHISPER_CLI := $(BUILD)/whisper-build/bin/whisper-cli
+
+$(WHISPER_CLI):
+	@command -v "$(CMAKE)" >/dev/null || { echo "cmake is needed to build whisper.cpp (or pass CMAKE=/path/to/cmake)"; exit 1; }
+	test -d $(BUILD)/whisper.cpp || git clone --depth 1 --branch $(WHISPER_TAG) https://github.com/ggml-org/whisper.cpp $(BUILD)/whisper.cpp
+	"$(CMAKE)" -S $(BUILD)/whisper.cpp -B $(BUILD)/whisper-build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=$(ARCH) \
+	  -DCMAKE_OSX_DEPLOYMENT_TARGET=$(MACOS_MIN) -DBUILD_SHARED_LIBS=OFF -DWHISPER_BUILD_TESTS=OFF -DWHISPER_SDL2=OFF \
+	  -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DGGML_OPENMP=OFF
+	"$(CMAKE)" --build $(BUILD)/whisper-build --target whisper-cli -j 6
+
 # The bundle's name has a space, which make targets cannot have: a stamp file stands for it.
-$(APP_STAMP): packaging/LineMR.swift packaging/Info.plist.in $(DYLIB)
+$(APP_STAMP): packaging/LineMR.swift packaging/Transcribe.swift packaging/speech-models.json packaging/Info.plist.in $(DYLIB) $(WHISPER_CLI)
 	rm -rf "$(APP_BUNDLE)"
 	mkdir -p "$(APP_BUNDLE)/Contents/MacOS" "$(APP_BUNDLE)/Contents/Resources"
-	$(SWIFTC) -O -swift-version 5 -target $(ARCH)-apple-macos$(MACOS_MIN) packaging/LineMR.swift \
+	cat packaging/Transcribe.swift packaging/LineMR.swift > $(BUILD)/LineMR-all.swift
+	$(SWIFTC) -O -swift-version 5 -target $(ARCH)-apple-macos$(MACOS_MIN) $(BUILD)/LineMR-all.swift \
 	  -o "$(APP_BUNDLE)/Contents/MacOS/$(APP_NAME)"
 	sed -e 's/@VERSION@/$(VERSION)/g' -e 's/@APP_ID@/$(APP_ID)/g' packaging/Info.plist.in > "$(APP_BUNDLE)/Contents/Info.plist"
-	cp $(DYLIB) "$(APP_BUNDLE)/Contents/Resources/"
+	cp $(DYLIB) packaging/speech-models.json $(WHISPER_CLI) "$(APP_BUNDLE)/Contents/Resources/"
+	codesign -f -s - "$(APP_BUNDLE)/Contents/Resources/whisper-cli"
 	codesign -f -s - "$(APP_BUNDLE)/Contents/Resources/libline_a11y.dylib"
 	codesign -f -s - --identifier $(APP_ID) "$(APP_BUNDLE)"
 	codesign -v --strict "$(APP_BUNDLE)"

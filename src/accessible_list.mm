@@ -10,12 +10,14 @@
 #include "text_capture.h"
 #include "text_recognition.h"
 #include "native_message_text.h"
+#include "transcribe_request.h"
 
 #include <QtCore/QAbstractItemModel>
 #include <QtCore/QCoreApplication>
 #include <QtCore/QDateTime>
 #include <QtCore/QElapsedTimer>
 #include <QtCore/QItemSelectionModel>
+#include <QtCore/QDir>
 #include <QtCore/QFile>
 #include <QtCore/QFileInfo>
 #include <QtCore/QMimeData>
@@ -918,6 +920,8 @@ struct ProfileOffer {
     RowSide side = RowSide::Empty;
     bool reactable = false; // "React" is offered (not for dates, notices, calls)
     bool reacted = false;   // the user has reacted: "Remove reaction" instead
+    bool voice = false;     // a voice message: "Transcribe voice message"
+    bool video = false;     // a video message: "Transcribe video"
     const char *noReaction = nullptr; // why not, for the log
 } g_profileOffer;
 
@@ -3343,6 +3347,15 @@ void addProfileMenuItem(QWidget *menu)
     } else {
         a11yLog("[menu] no reaction item: row %d (%s)", offer.index.row(), offer.noReaction ? offer.noReaction : "empty row");
     }
+    if (offer.voice || offer.video) {
+        QPointer<QAbstractItemView> view = offer.view;
+        QPersistentModelIndex index = offer.index;
+        addExtraMenuItem(menu, label(offer.video ? "Transcribe video" : "Transcribe voice message"), [view, index] {
+            auto *l = view ? dynamic_cast<LineAccessibleList *>(QAccessible::queryAccessibleInterface(view.data())) : nullptr;
+            if (l && index.isValid())
+                l->transcribeMessage(index.row());
+        });
+    }
     // The user's own messages, notices and dates have no sender to show.
     if (offer.side != RowSide::Received) {
         a11yLog("[menu] no profile item: message row %d is not a received message (%d)", offer.index.row(), int(offer.side));
@@ -3420,6 +3433,10 @@ void judgeReactions(ProfileOffer &offer, QAbstractItemView *view, int row, const
 
 } // namespace
 
+namespace {
+void pressOpenFolderFirst(QAbstractItemView *v, const QModelIndex &idx, int row);
+} // namespace
+
 bool LineAccessibleList::openRowMenu()
 {
     QAbstractItemView *v = view();
@@ -3433,11 +3450,17 @@ bool LineAccessibleList::openRowMenu()
     const CaptureResult cap = captureRow(v, row, &r);
     if (cap.skipped)
         return false;
+    pressOpenFolderFirst(v, idx, row);
     // The bridge's own items for this message's menu (addProfileMenuItem()).
     g_profileOffer.view = v;
     g_profileOffer.index = idx;
     g_profileOffer.side = rowSide(v, row);
     judgeReactions(g_profileOffer, v, row, r, cap);
+    if (ListRowTextCache *c = cache()) {
+        const QString cls = c->delegateClassFor(row);
+        g_profileOffer.voice = cls.contains(QLatin1StringView("Audio"));
+        g_profileOffer.video = cls.contains(QLatin1StringView("Video"));
+    }
     // Keep Memo has no reactions (LINE draws no reaction button there).
     if (g_profileOffer.reactable && inKeepMemo(v)) {
         g_profileOffer.reactable = false;
@@ -3636,10 +3659,80 @@ struct PendingMessageCommand {
     QStringList labels;
     QElapsedTimer at;
     // A plain command, LINE's "Save as...", or Copy for the bridge to save the text.
-    enum Purpose { Command, SaveAs, CopyText } purpose = Command;
+    enum Purpose { Command, SaveAs, CopyText, FetchFile, OpenFolder } purpose = Command;
     QString kind;     // the command (Reply ...) or "Text", for what is said
-    QString fileName; // suggested name of the text file
+    QString fileName; // suggested name of the text file; FetchFile: the file LINE is to save
+    int seconds = -1; // FetchFile: the recording's length
+    QString title;    // FetchFile: the chat
 } g_messageCommand;
+
+// Messages whose file LINE saved for a transcription. LINE then offers "Open folder" instead of
+// "Save as..." for that message, also after the file is deleted, until "Open folder" is pressed: LINE
+// then finds the file gone and offers "Save as..." again. Kept in a file (LINE keeps its side too).
+QSet<QString> &savedForTranscription()
+{
+    static QSet<QString> *ids = [] {
+        auto *set = new QSet<QString>;
+        QFile file(bridgeDirectory() + QStringLiteral("transcribe-saved.txt"));
+        if (file.open(QIODevice::ReadOnly)) {
+            for (const QByteArray &line : file.readAll().split('\n')) {
+                if (!line.isEmpty())
+                    set->insert(QString::fromLatin1(line));
+            }
+        }
+        return set;
+    }();
+    return *ids;
+}
+
+void storeSavedForTranscription()
+{
+    QFile file(bridgeDirectory() + QStringLiteral("transcribe-saved.txt"));
+    if (file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        file.write(QStringList(savedForTranscription().values()).join(QLatin1Char('\n')).toLatin1());
+}
+
+// LINE saved this message's file for a transcription and LINE MR has deleted it since.
+bool savedFileGone(const QString &id)
+{
+    const QString base = bridgeDirectory() + QStringLiteral("transcribe/") + id;
+    return !id.isEmpty() && savedForTranscription().contains(id) && !QFile::exists(base + QStringLiteral(".m4a"))
+        && !QFile::exists(base + QStringLiteral(".mp4"));
+}
+
+// LINE offers "Open folder" for a file that is gone: pressed first (nothing opens), then the real menu.
+// The opening of the menu that follows this call is the one that presses it.
+void pressOpenFolderFirst(QAbstractItemView *v, const QModelIndex &idx, int row)
+{
+    if (const QString id = readChatMessageData(idx.data(kItemDataRole).value<QObject *>()).id; savedFileGone(id)) {
+        savedForTranscription().remove(id);
+        storeSavedForTranscription();
+        PendingMessageCommand then = g_messageCommand;
+        static const QStringList openFolder = { QStringLiteral("Open folder"), QStringLiteral("เปิดโฟลเดอร์"), QStringLiteral("フォルダを開く"),
+                                                QStringLiteral("フォルダーを開く"), QStringLiteral("打开文件夹"), QStringLiteral("開啟資料夾"),
+                                                QStringLiteral("打開資料夾") };
+        g_messageCommand = PendingMessageCommand();
+        g_messageCommand.source = v;
+        g_messageCommand.row = idx;
+        g_messageCommand.labels = openFolder;
+        g_messageCommand.purpose = PendingMessageCommand::OpenFolder;
+        g_messageCommand.at.start();
+        if (v->currentIndex() != idx)
+            v->setCurrentIndex(idx);
+        a11yLog("[transcribe] row %d: the saved file is gone; pressing Open folder so that LINE offers Save as again", row);
+        QPointer<QAbstractItemView> guard(v);
+        QTimer::singleShot(700, v, [guard, then]() mutable {
+            auto *list = LineAccessibleList::listFor(guard);
+            if (!list)
+                return;
+            if (then.source) {
+                then.at.start();
+                g_messageCommand = then;
+            }
+            list->openRowMenu();
+        });
+    }
+}
 
 void sayCommandUnavailable(const QString &command)
 {
@@ -4186,6 +4279,56 @@ bool LineAccessibleList::saveMessage()
     return true;
 }
 
+bool LineAccessibleList::transcribeMessage(int row)
+{
+    QAbstractItemView *v = view();
+    if (!v || !v->model() || row < 0)
+        return false;
+    if (g_messageCommand.source && g_messageCommand.at.isValid() && g_messageCommand.at.elapsed() < 3000)
+        return true;
+    const QModelIndex idx = v->model()->index(row, 0, v->rootIndex());
+    v->scrollTo(idx);
+    const ChatMessageFields f = readChatMessageData(idx.data(kItemDataRole).value<QObject *>());
+    ListRowTextCache *c = cache();
+    const QString cls = c ? c->delegateClassFor(row) : QString();
+    const bool video = cls.contains(QLatin1StringView("Video")) || (cls.isEmpty() && !f.duration.isEmpty() && !f.mediaPath.isEmpty());
+    const bool voice = cls.contains(QLatin1StringView("Audio")) || (cls.isEmpty() && !f.duration.isEmpty() && f.mediaPath.isEmpty());
+    if (f.id.isEmpty() || (!video && !voice)) {
+        announce(label("Not a voice message or video."), AnnounceWhen::LineActive);
+        return true;
+    }
+    int seconds = -1;
+    if (!f.duration.isEmpty()) {
+        seconds = 0;
+        for (const QString &part : f.duration.split(QLatin1Char(':')))
+            seconds = seconds * 60 + part.toInt();
+    }
+    const QString folder = bridgeDirectory() + QStringLiteral("transcribe/");
+    QDir().mkpath(folder);
+    const QString target = folder + f.id + (video ? QStringLiteral(".mp4") : QStringLiteral(".m4a"));
+    QFile::remove(target);
+    static const QStringList saveAs = { QStringLiteral("Save as"), QStringLiteral("บันทึกเป็น"), QStringLiteral("名前を付けて保存"),
+                                        QStringLiteral("另存为"), QStringLiteral("另存新檔"), QStringLiteral("另存為") };
+    g_messageCommand = PendingMessageCommand();
+    g_messageCommand.source = v;
+    g_messageCommand.row = idx;
+    g_messageCommand.labels = saveAs;
+    g_messageCommand.purpose = PendingMessageCommand::FetchFile;
+    g_messageCommand.kind = video ? QStringLiteral("video") : QStringLiteral("voice");
+    g_messageCommand.fileName = target;
+    g_messageCommand.seconds = seconds;
+    g_messageCommand.title = chatNameFor(v);
+    g_messageCommand.at.start();
+    if (v->currentIndex() != idx)
+        v->setCurrentIndex(idx);
+    a11yLog("[transcribe] row %d: having LINE save the %s", row, video ? "video" : "voice message");
+    if (!openRowMenu()) {
+        g_messageCommand = PendingMessageCommand();
+        announce(label("LINE did not save the file. Try again."), AnnounceWhen::LineActive);
+    }
+    return true;
+}
+
 bool LineAccessibleList::toggleMediaTick()
 {
     QAbstractItemView *v = view();
@@ -4243,6 +4386,26 @@ QWidget *takePendingMenuChoice(const QList<QWidget *> &items)
             a11yLog("[message-command] activating %s", qUtf8Printable(text));
             if (command.purpose == PendingMessageCommand::CopyText)
                 captureCopiedText(command.fileName);
+            if (command.purpose == PendingMessageCommand::FetchFile) {
+                const QString target = command.fileName, kind = command.kind, title = command.title;
+                const int seconds = command.seconds;
+                answerNextSavePanel(target, kind == QLatin1StringView("video") ? 120000 : 20000, [target, kind, seconds, title](bool asked) {
+                    if (!asked) {
+                        announce(label("LINE did not save the file. Try again."), AnnounceWhen::LineActive);
+                        return;
+                    }
+                    waitForFinishedFile(target, [target, kind, seconds, title](bool saved) {
+                        if (!saved) {
+                            announce(label("LINE did not save the file. Try again."), AnnounceWhen::LineActive);
+                            return;
+                        }
+                        savedForTranscription().insert(QFileInfo(target).completeBaseName());
+                        storeSavedForTranscription();
+                        if (!requestTranscription(target, kind, seconds, title))
+                            announce(label("LINE MR.app could not be opened for this."), AnnounceWhen::LineActive);
+                    });
+                });
+            }
             return item;
         }
         // Not offered for this message (Reply in Keep Memo, Unsend on someone else's): the menu is
@@ -4254,7 +4417,11 @@ QWidget *takePendingMenuChoice(const QList<QWidget *> &items)
                     menu->hide();
             });
         }
-        if (command.purpose == PendingMessageCommand::Command)
+        if (command.purpose == PendingMessageCommand::OpenFolder)
+            a11yLog("[transcribe] no Open folder in the menu");
+        else if (command.purpose == PendingMessageCommand::FetchFile)
+            announce(label("LINE did not save the file. Try again."), AnnounceWhen::LineActive);
+        else if (command.purpose == PendingMessageCommand::Command)
             sayCommandUnavailable(command.kind);
         else
             announce(label("LINE offers no way to save this message (it may have expired)."), AnnounceWhen::LineActive);

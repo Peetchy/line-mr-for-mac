@@ -197,6 +197,9 @@ public:
     // Command+S on a message: LINE's Save as for media and files, a .txt file for text, locations and
     // contacts; stickers, calls, dates and notices cannot be saved.
     bool saveMessage();
+    // Control+Shift+T or the menu's "Transcribe": LINE saves the voice message's / video's own file
+    // for LINE MR.app, which turns it into text.
+    bool transcribeMessage(int row);
     // The menu of the chat / friend list row under the cursor (not of LINE's current row).
     bool openCursorMenu();
     // The text of the `n`-th newest message with text (1 = newest), or "" if there is none.

@@ -319,7 +319,15 @@ func run() {
 
 let application = NSApplication.shared
 application.setActivationPolicy(.accessory)
+installEditMenu()
+// LINE asks for a transcription with linemr://transcribe (Transcribe.swift).
+let transcribeURLHandler = TranscribeURLHandler()
+NSAppleEventManager.shared().setEventHandler(transcribeURLHandler, andSelector: #selector(TranscribeURLHandler.handle(_:withReply:)),
+                                             forEventClass: AEEventClass(kInternetEventClass), andEventID: AEEventID(kAEGetURL))
 // Started from a timer, not the main dispatch queue: run() waits in nested run loops for work that
 // is delivered on the main queue, which a block already running on that queue would block.
-Timer.scheduledTimer(withTimeInterval: 0, repeats: false) { _ in run() }
+// (A little later: when started for a URL, its Apple event comes first.)
+Timer.scheduledTimer(withTimeInterval: 0.3, repeats: false) { _ in
+    if !TranscribeJob.handledURL { run() }
+}
 application.run()
