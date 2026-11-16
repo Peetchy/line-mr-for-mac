@@ -48,7 +48,10 @@ struct SpeechModel: Decodable {
     let url: String
     let sha256: String
     let size: Int64
+    /// What the model is for ("best for Traditional Chinese"), by language code; not every model has one.
+    let note: [String: String]?
 
+    var localNote: String? { note?[thai ? "th" : "en"] }
     var localURL: URL { TranscribeStore.modelsFolder.appendingPathComponent(file) }
     var isDownloaded: Bool {
         ((try? FileManager.default.attributesOfItem(atPath: localURL.path)[.size]) as? Int64) == size
@@ -263,7 +266,7 @@ final class TranscribeJob: NSObject, NSWindowDelegate, URLSessionDownloadDelegat
             return
         }
         guard let request = readTranscribeRequest() else {
-            if !anythingElseRunning { exit(0) }
+            if !anythingElseRunning && YouTubeJob.current == nil { exit(0) }
             return
         }
         let job = TranscribeJob(request)
@@ -344,8 +347,9 @@ final class TranscribeJob: NSObject, NSWindowDelegate, URLSessionDownloadDelegat
         for model in models {
             engines.append(.model(model))
             let size = ByteCountFormatter.string(fromByteCount: model.size, countStyle: .file)
-            titles.append(model.isDownloaded ? "\(model.name) (whisper.cpp)"
-                                             : "\(model.name) (whisper.cpp, " + tr("downloads \(size)", "ดาวน์โหลด \(size)") + ")")
+            let name = model.localNote.map { "\(model.name): \($0)" } ?? model.name
+            titles.append(model.isDownloaded ? "\(name) (whisper.cpp)"
+                                             : "\(name) (whisper.cpp, " + tr("downloads \(size)", "ดาวน์โหลด \(size)") + ")")
         }
         if let path = TranscribeStore.lastModelFile, FileManager.default.fileExists(atPath: path) {
             engines.append(.file(URL(fileURLWithPath: path)))
@@ -568,8 +572,10 @@ final class TranscribeJob: NSObject, NSWindowDelegate, URLSessionDownloadDelegat
     private func finishAndQuit() {
         cancelWork()
         try? FileManager.default.removeItem(at: request.file)
+        TranscribeJob.current = nil
         running(lineID)?.activate(options: [])
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { exit(0) }
+        // (A YouTube download may still be open: the app stays for it.)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { if YouTubeJob.current == nil { exit(0) } }
     }
 
     // MARK: Download
@@ -737,7 +743,11 @@ func installEditMenu() {
 final class TranscribeURLHandler: NSObject {
     @objc func handle(_ event: NSAppleEventDescriptor, withReply reply: NSAppleEventDescriptor) {
         guard let text = event.paramDescriptor(forKeyword: AEKeyword(keyDirectObject))?.stringValue,
-              let url = URL(string: text), url.scheme == "linemr", url.host == "transcribe" else { return }
-        TranscribeJob.handleURL()
+              let url = URL(string: text), url.scheme == "linemr" else { return }
+        switch url.host {
+        case "transcribe": TranscribeJob.handleURL()
+        case "youtube": YouTubeJob.handleURL() // YouTube.swift
+        default: break
+        }
     }
 }

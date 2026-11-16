@@ -11,6 +11,15 @@
 
 namespace line_a11y {
 
+// Hooks LINE's save panels (once, at bridge start): they start in the folder saved to last, and
+// answerNextSavePanel() can answer one without showing it.
+void installSavePanelHooks();
+
+// The folder the user saved to last ("" if none yet, or it is gone), and a new one to remember: for
+// the bridge's own file dialog (Qt's, not a macOS panel), which shares it with LINE's save panels.
+QString lastSaveFolder();
+void rememberSaveFolder(const QString &folder);
+
 // The next save panel LINE shows is not shown: it answers `path` at once. `done(false)` if none was
 // asked for within `timeoutMs` (LINE downloads a video before it asks), `done(true)` once one was.
 void answerNextSavePanel(const QString &path, int timeoutMs, std::function<void(bool)> done);
@@ -29,5 +38,10 @@ void saveThenTranscribe(const QString &target, const QString &kind, int seconds,
 
 // Hands `file` over to LINE MR.app. False if it could not be asked (LINE MR.app is not installed).
 bool requestTranscription(const QString &file, const QString &kind, int seconds, const QString &title);
+
+// Download from YouTube: writes the address into youtube-request.txt and opens linemr://youtube
+// (LINE MR.app: the notice, the choices and the download; LINE's sandbox could not run the programs).
+// Says so if LINE MR.app cannot be asked.
+void requestYouTubeDownload(const QString &url);
 
 } // namespace line_a11y

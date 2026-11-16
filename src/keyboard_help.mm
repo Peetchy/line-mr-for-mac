@@ -41,6 +41,7 @@ const Row kRows[] = {
     { "Control+M", { "Messages of the open chat, starting at the newest", "ไปที่ข้อความของแชทที่เปิดอยู่ เริ่มที่ข้อความล่าสุด", "開いているトークのメッセージへ (最新から)", "转到当前聊天的消息 (从最新开始)", "前往目前聊天的訊息 (從最新開始)" } },
     { "Control+I", { "Message input", "ไปที่ช่องพิมพ์ข้อความ", "メッセージ入力欄へ", "转到消息输入框", "前往訊息輸入框" } },
     { "Control+Shift+1 ... 9", { "Read a recent message without moving (1 is the newest)", "อ่านข้อความล่าสุดโดยไม่ย้ายตำแหน่ง (1 คือใหม่สุด)", "移動せずに最近のメッセージを読む (1 が最新)", "不移动位置朗读最近的消息 (1 为最新)", "不移動位置朗讀最近的訊息 (1 為最新)" } },
+    { "Control+Shift+1 ... 9, twice", { "Press the same key twice quickly: go to that message and open its menu", "กดปุ่มเดิมสองครั้งเร็ว ๆ: ไปที่ข้อความนั้นและเปิดเมนูของข้อความ", "同じキーをすばやく 2 回押す: そのメッセージへ移動してメニューを開く", "快速按两次同一个键：转到该消息并打开其菜单", "快速按兩次同一個鍵：前往該訊息並開啟其選單" } },
     { "Option+Command", { "Works like Control for 1, 2, 3, C, L, F, M and I", "ใช้แทน Control ได้กับ 1, 2, 3, C, L, F, M และ I", "1、2、3、C、L、F、M、I では Control と同じ", "对 1、2、3、C、L、F、M、I 与 Control 相同", "對 1、2、3、C、L、F、M、I 與 Control 相同" } },
 
     { nullptr, { "Chat list and friend list", "รายการแชทและรายชื่อเพื่อน", "トークリストと友だちリスト", "聊天列表和好友列表", "聊天列表和好友列表" } },
@@ -60,6 +61,7 @@ const Row kRows[] = {
     { "Control+Shift+R", { "Open the reactions of the message", "เปิดการแสดงความรู้สึกของข้อความ", "メッセージのリアクションを開く", "打开消息的回应", "開啟訊息的回應" } },
     { "Control+T", { "Translate the message", "แปลข้อความ", "メッセージを翻訳", "翻译消息", "翻譯訊息" } },
     { "Control+Shift+T", { "Turn a voice message or video into text", "แปลงข้อความเสียงหรือวิดีโอเป็นข้อความ", "ボイスメッセージや動画を文字に起こす", "将语音消息或视频转为文字", "將語音訊息或影片轉為文字" } },
+    { "Control+Shift+Y", { "Download the video of the YouTube link in the message, as MP4 or MP3, also its whole playlist", "ดาวน์โหลดวิดีโอจากลิงก์ YouTube ในข้อความ เป็น MP4 หรือ MP3 หรือทั้งเพลย์ลิสต์", "メッセージ内の YouTube リンクの動画を MP4 または MP3 でダウンロード (再生リスト全体も可)", "下载消息中 YouTube 链接的视频 (MP4 或 MP3)，也可下载整个播放列表", "下載訊息中 YouTube 連結的影片 (MP4 或 MP3)，也可下載整個播放清單" } },
     { "Delete", { "Delete the message (LINE asks to confirm)", "ลบข้อความ (LINE จะถามยืนยัน)", "メッセージを削除 (LINE が確認します)", "删除消息 (LINE 会要求确认)", "刪除訊息 (LINE 會要求確認)" } },
     { "Shift+Delete", { "Unsend the message (LINE asks to confirm)", "ยกเลิกการส่งข้อความ (LINE จะถามยืนยัน)", "メッセージの送信を取り消す (LINE が確認します)", "撤回消息 (LINE 会要求确认)", "收回訊息 (LINE 會要求確認)" } },
     { "Command+S", { "Save the message: media and files with LINE's Save as, text as a .txt file", "บันทึกข้อความ: สื่อและไฟล์ผ่าน Save as ของ LINE ข้อความเป็นไฟล์ .txt", "メッセージを保存: メディアとファイルは LINE の「名前を付けて保存」、テキストは .txt ファイル", "保存消息：媒体和文件使用 LINE 的“另存为”，文字保存为 .txt 文件", "儲存訊息：媒體和檔案使用 LINE 的「另存新檔」，文字儲存為 .txt 檔案" } },
@@ -113,6 +115,7 @@ const Row kRows[] = {
     { nullptr, { "Calls", "การโทร", "通話", "通话", "通話" } },
     { "Control+A", { "Answer an incoming call", "รับสาย", "着信に応答", "接听来电", "接聽來電" } },
     { "Control+D", { "Decline a call, or end the current one", "ปฏิเสธสาย หรือวางสายที่กำลังคุย", "着信を拒否、または通話を終了", "拒接来电或结束当前通话", "拒接來電或結束目前通話" } },
+    { "Control+Shift+W", { "From any app: report the LINE call and caller when known", "จากโปรแกรมใดก็ได้: แจ้งสถานะสาย LINE และชื่อผู้โทรเมื่อทราบ", "どのアプリからでも: LINE の通話状態と分かる場合は相手を読み上げる", "在任何应用中：报告 LINE 通话状态及已知的来电者", "在任何應用程式中：報告 LINE 通話狀態及已知的來電者" } },
     { "Control+Shift+A / Control+Shift+D", { "From any app, while a LINE call rings: answer / decline", "จากโปรแกรมอื่น ขณะมีสาย LINE เรียกเข้า: รับสาย / ปฏิเสธสาย", "他のアプリから、LINE の着信中に: 応答 / 拒否", "在其他应用中，LINE 来电时：接听 / 拒接", "在其他應用程式中，LINE 來電時：接聽 / 拒接" } },
 };
 

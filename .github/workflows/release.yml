@@ -81,8 +81,8 @@ jobs:
           - **LINE-MR-$VERSION.dmg**: แนะนำ มีทั้งตัวติดตั้ง (.pkg) และตัวโปรแกรม / recommended, contains the installer and the app
           - **LINE-MR-$VERSION.pkg**: ตัวติดตั้งอย่างเดียว / installer only
 
-          ต้องใช้ Mac ชิป Apple Silicon, macOS 14 ขึ้นไป และ LINE จาก Mac App Store (ทดสอบกับ LINE 26.5.0)
-          Requires Apple silicon, macOS 14 or later, and LINE from the Mac App Store (tested with LINE 26.5.0).
+          ต้องใช้ Mac ชิป Apple Silicon, macOS 14 ขึ้นไป และ LINE จาก Mac App Store (ทดสอบกับ LINE 26.6.0)
+          Requires Apple silicon, macOS 14 or later, and LINE from the Mac App Store (tested with LINE 26.6.0).
 
           LINE MR ไม่ได้เซ็นด้วย Apple Developer ID ครั้งแรกต้องกด **Open Anyway** ใน System Settings > Privacy & Security
           ดูวิธีติดตั้งทีละขั้นได้ใน [README](https://github.com/$GITHUB_REPOSITORY#การติดตั้งสำหรับผู้ใช้--installation)

@@ -1,12 +1,14 @@
 #include "line_introspect.h"
 
 #include "a11y_log.h"
+#include "line_strings.h"
 
 #include <QtCore/QHash>
 #include <QtCore/QLocale>
 #include <QtCore/QMetaObject>
 #include <QtCore/QMetaProperty>
 #include <QtCore/QRegularExpression>
+#include <QtCore/QUrl>
 #include <QtCore/QVariant>
 #include <QtGui/QTextDocumentFragment>
 #include <QtWidgets/QAbstractButton>
@@ -395,6 +397,11 @@ const LabelTranslations kLabels[] = {
     { "No older messages", "ไม่มีข้อความเก่ากว่านี้", "これより前のメッセージはありません", "没有更早的消息", "沒有更早的訊息" },
     { "Transcribe voice message", "แปลงเสียงเป็นข้อความ", "ボイスメッセージを文字に起こす", "将语音消息转为文字", "將語音訊息轉為文字" },
     { "Transcribe video", "ถอดเสียงวิดีโอเป็นข้อความ", "動画の音声を文字に起こす", "将视频语音转为文字", "將影片語音轉為文字" },
+    { "Download video from YouTube", "ดาวน์โหลดวิดีโอจาก YouTube", "YouTube から動画をダウンロード", "从 YouTube 下载视频", "從 YouTube 下載影片" },
+    { "LINE MR.app could not be opened for the download.", "เปิด LINE MR.app เพื่อดาวน์โหลดไม่ได้", "ダウンロードのために LINE MR.app を開けませんでした。", "无法为下载打开 LINE MR.app。", "無法為下載開啟 LINE MR.app。" },
+    { "Download from YouTube is turned off in message-settings.ini.", "การดาวน์โหลดจาก YouTube ปิดอยู่ใน message-settings.ini", "YouTube からのダウンロードは message-settings.ini でオフになっています。", "从 YouTube 下载已在 message-settings.ini 中关闭。", "從 YouTube 下載已在 message-settings.ini 中關閉。" },
+    { "This message has no YouTube link.", "ข้อความนี้ไม่มีลิงก์ YouTube", "このメッセージには YouTube のリンクがありません。", "此消息中没有 YouTube 链接。", "此訊息中沒有 YouTube 連結。" },
+    { "LINE is busy. Press Control+Shift+Y again.", "LINE กำลังทำงานอยู่ กด Control+Shift+Y อีกครั้ง", "LINE が処理中です。もう一度 Control+Shift+Y を押してください。", "LINE 正忙。请再按一次 Control+Shift+Y。", "LINE 正忙。請再按一次 Control+Shift+Y。" },
     { "Not a voice message or video.", "ไม่ใช่ข้อความเสียงหรือวิดีโอ", "ボイスメッセージや動画ではありません。", "不是语音消息或视频。", "不是語音訊息或影片。" },
     { "LINE did not save the file. Try again.", "LINE ไม่ได้บันทึกไฟล์ กรุณาลองอีกครั้ง", "LINE はファイルを保存しませんでした。もう一度お試しください。", "LINE 未保存该文件，请重试。", "LINE 未儲存該檔案，請再試一次。" },
     { "LINE MR.app could not be opened for this.", "เปิด LINE MR.app เพื่อแปลงเสียงไม่ได้", "このために LINE MR.app を開けませんでした。", "无法为此打开 LINE MR.app。", "無法為此開啟 LINE MR.app。" },
@@ -516,11 +523,13 @@ const LabelTranslations kLabels[] = {
     { "No message %1", "ไม่มีข้อความที่ %1", "メッセージ %1 はありません", "没有第 %1 条消息", "沒有第 %1 則訊息" },
     { "Not available here", "ใช้ที่นี่ไม่ได้", "ここでは使用できません", "此处不可用", "此處無法使用" },
     { "No incoming call", "ไม่มีสายเรียกเข้า", "着信はありません", "没有来电", "沒有來電" },
-    { "Control+A answers, Control+D declines. From another application: Control+Shift+A or Control+Shift+D.",
-      "Control+A รับสาย, Control+D ปฏิเสธสาย จากแอปอื่น: Control+Shift+A หรือ Control+Shift+D",
-      "Control+A で応答、Control+D で拒否。他のアプリからは Control+Shift+A または Control+Shift+D",
-      "Control+A 接听，Control+D 拒绝。在其他应用中：Control+Shift+A 或 Control+Shift+D",
-      "Control+A 接聽，Control+D 拒絕。在其他應用程式中：Control+Shift+A 或 Control+Shift+D" },
+    { "No incoming call or active call", "ไม่มีสายเรียกเข้าและไม่ได้อยู่ในการโทรสนทนา", "着信中または通話中ではありません", "没有来电，也没有正在通话", "沒有來電，也沒有正在通話" },
+    { "Call in progress; caller unknown", "กำลังโทรสนทนา แต่ไม่ทราบชื่อผู้โทร", "通話中ですが、相手の名前は不明です", "正在通话，但无法确定对方姓名", "正在通話，但無法確定對方姓名" },
+    { "Control+A answers, Control+D declines. From another application: Control+Shift+A or Control+Shift+D. Control+Shift+W says who is calling.",
+      "Control+A รับสาย, Control+D ปฏิเสธสาย จากแอปอื่น: Control+Shift+A หรือ Control+Shift+D กด Control+Shift+W เพื่อฟังว่าใครโทรมา",
+      "Control+A で応答、Control+D で拒否。他のアプリからは Control+Shift+A または Control+Shift+D。Control+Shift+W で発信者を読み上げます",
+      "Control+A 接听，Control+D 拒绝。在其他应用中：Control+Shift+A 或 Control+Shift+D。Control+Shift+W 朗读来电者",
+      "Control+A 接聽，Control+D 拒絕。在其他應用程式中：Control+Shift+A 或 Control+Shift+D。Control+Shift+W 朗讀來電者" },
 };
 
 QHash<QString, QString> labelsFor(UiLanguage language)
@@ -1512,6 +1521,32 @@ QString firstLinkTarget(const QString &html)
                                .split(u'\n'));
 }
 
+bool isYouTubeAddress(const QString &url)
+{
+    const QString host = QUrl(url).host().toLower();
+    for (const char *domain : { "youtube.com", "youtu.be", "youtube-nocookie.com" }) {
+        const QString d = QString::fromLatin1(domain);
+        if (host == d || host.endsWith(u'.' + d))
+            return true;
+    }
+    return false;
+}
+
+QString firstYouTubeAddress(const QStringList &lines)
+{
+    static const QRegularExpression start(QStringLiteral("(?:https?://|www\\.)"), QRegularExpression::CaseInsensitiveOption);
+    for (qsizetype i = 0; i < lines.size(); ++i) {
+        auto it = start.globalMatch(lines[i]);
+        while (it.hasNext()) {
+            const QRegularExpressionMatch m = it.next();
+            const QString url = firstWebAddress(QStringList { lines[i].mid(m.capturedStart(0)) } + lines.mid(i + 1));
+            if (isYouTubeAddress(url))
+                return url;
+        }
+    }
+    return QString();
+}
+
 bool openInBrowser(const QString &url)
 {
     if (!url.startsWith(QLatin1StringView("http://"), Qt::CaseInsensitive)
@@ -1557,8 +1592,28 @@ QString spokenDuration(const QString &clock)
     return parts.join(separator);
 }
 
+// Labels that name a LINE control in LINE's own words (user request on Windows): LINE's text for that
+// control (line_strings.h), the bridge's translation only when LINE has none.
+static const char *lineTextKey(const char *english)
+{
+    static const QHash<QByteArray, const char *> keys = {
+        // The floating button under the chat list (LINE's tooltip).
+        { "Create chat", "TalkChatlistFloatingCreateChat" },
+        // The arrow beside the chat list's search field: LINE's tooltip names what a press does.
+        { "Show or hide chat room, chat room shown", "ChatlistAllinoneCloseBtn" },
+        { "Show or hide chat room, chat room hidden", "ChatlistAllinoneOpenBtn" },
+        // The sidebar button (LINE's tooltip; zh_TW 會議室).
+        { "Meeting", "GroupcallCreatechatButtonCreatemeeting" },
+    };
+    return keys.value(QByteArray(english), nullptr);
+}
+
 QString label(const char *english)
 {
+    if (const char *key = lineTextKey(english)) {
+        if (QString text = lineText(key); !text.isEmpty())
+            return text;
+    }
     const QString en = QString::fromUtf8(english);
     if (uiLanguage() == UiLanguage::English)
         return en;

@@ -199,6 +199,10 @@ public:
     // Command+S on a message: LINE's Save as for media and files, a .txt file for text, locations and
     // contacts; stickers, calls, dates and notices cannot be saved.
     bool saveMessage();
+    // Control+Shift+Y on a message (or "Download video from YouTube" in its menu): the message's
+    // YouTube address goes to LINE MR.app, which checks it and asks what to download; said so if the
+    // message has none.
+    bool downloadYouTube();
     // VoiceOver moved above the oldest message (onto the row offersOlder() adds): LINE loads older
     // messages, and VoiceOver goes on to the newest of them. VoiceOver asks the app nothing at the
     // end of a list, so that row is what tells the bridge.
@@ -209,6 +213,10 @@ public:
     // LINE's current row; a keyboard step (stepRow(), focusEdgeRow()) forgets it.
     void noteRowNameAsked(int row);
     void syncToVoiceOverRow();
+    // Chat / friend list: Return, Shift+Return and the menu key mean the row VoiceOver's cursor is on
+    // (VO+arrows do not move the bridge's cursor; Return did nothing on a search result reached that
+    // way, user report 2026-11-16). A step with the plain arrows forgets it.
+    void useVoiceOverRowAsCursor();
     // Control+Shift+T or the menu's "Transcribe": LINE saves the voice message's / video's own file
     // for LINE MR.app, which turns it into text.
     bool transcribeMessage(int row);
@@ -219,6 +227,11 @@ public:
     bool openCursorMenu();
     // The text of the `n`-th newest message with text (1 = newest), or "" if there is none.
     QString recentMessageText(int n);
+    // Its row (-1 if there is none).
+    int recentMessageRow(int n);
+    // Control+Shift+digit pressed twice: the keyboard goes to that message in the list and its menu
+    // opens (Escape then stays on the message). False if there is no such message.
+    bool openRecentMessageMenu(int n);
 
     // Grids and lists LINE gives no keyboard (a chat's Photos & videos, Links, Files; the sticker
     // window's packages): the arrows, PageUp/PageDown and Home/End move the bridge's cursor by what is
@@ -278,7 +291,9 @@ private:
     QList<QMetaObject::Connection> m_connections;
     QList<QMetaObject::Connection> m_modelConnections;
     mutable QPointer<QAbstractItemModel> m_model;
-    // Follows its chat when LINE re-sorts the list (new messages move chats to the top).
+    // Follows its chat when LINE re-sorts the list (new messages move chats to the top). In the
+    // messages: the reading position pinned by Shift+Tab, which LINE's delayed moves of its own
+    // current row must not replace.
     QPersistentModelIndex m_cursor;
     // The message row last read while the list had focus (focusRememberedRow()).
     QPersistentModelIndex m_lastRead;
@@ -289,6 +304,7 @@ private:
     // load, which kills persistent indexes), and its row for rows whose id does not last (dates).
     QString m_voiceOverId;
     int m_voiceOverRow = -1;
+    QPersistentModelIndex m_voiceOverIndex; // chat / friend list: the row VoiceOver is on
     int m_nameRow = -1;
     int m_nameTimes = 0;
     bool m_nameAfterKey = false;

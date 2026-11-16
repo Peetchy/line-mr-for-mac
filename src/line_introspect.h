@@ -157,6 +157,12 @@ QString firstWebAddress(const QStringList &lines);
 
 // The first http(s) link of a message's text: an <a href> target, else a web address in the text.
 QString firstLinkTarget(const QString &html);
+// True for a youtube.com / youtu.be / youtube-nocookie.com address (any sub-domain).
+bool isYouTubeAddress(const QString &url);
+// The first YouTube address in `lines` (as firstWebAddress(), but every address of a line is looked
+// at), or "".
+QString firstYouTubeAddress(const QStringList &lines);
+
 
 // Opens an http(s) address in the user's default browser through macOS (not through Qt, where LINE
 // may have registered handlers of its own). False if it is not http(s) or macOS refused.

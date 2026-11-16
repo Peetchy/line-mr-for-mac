@@ -320,7 +320,8 @@ func run() {
 let application = NSApplication.shared
 application.setActivationPolicy(.accessory)
 installEditMenu()
-// LINE asks for a transcription with linemr://transcribe (Transcribe.swift).
+// LINE asks for a transcription with linemr://transcribe (Transcribe.swift) and for a download from
+// YouTube with linemr://youtube (YouTube.swift).
 let transcribeURLHandler = TranscribeURLHandler()
 NSAppleEventManager.shared().setEventHandler(transcribeURLHandler, andSelector: #selector(TranscribeURLHandler.handle(_:withReply:)),
                                              forEventClass: AEEventClass(kInternetEventClass), andEventID: AEEventID(kAEGetURL))

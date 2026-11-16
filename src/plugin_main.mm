@@ -6,6 +6,8 @@
 
 #include "a11y_EventFilter.h"
 #include "a11y_log.h"
+#include "call_keys.h"
+#include "transcribe_request.h"
 #include "focus_highlight.h"
 #include "accessible_widgets.h"
 #include "call_launch_hook.h"
@@ -132,6 +134,8 @@ void startBridge()
     g_filter = new A11yEventFilter(app);
     app->installEventFilter(g_filter);
     installEarlyKeyHook();
+    startCallLink();
+    installSavePanelHooks();
     startFocusHighlight(app);
     g_filter->startWatchdog(kWatchdogIntervalMs);
 

@@ -1293,7 +1293,7 @@ void quickWindowShown(QQuickWindow *window)
             const QString text = incomingCallText(m);
             a11yLog("[call] incoming call notification %s (%d items)", guard->metaObject()->className(),
                     int(m.order.size()));
-            announce(text + QStringLiteral(". ") + callKeysHint(), AnnounceWhen::Always);
+            announceIncomingCall(text);
             incomingCallChanged(guard);
         } else if (QLatin1StringView(guard->metaObject()->className()).startsWith(QLatin1StringView("CallMessageToastWindow"))) {
             return; // a chat message shown during a call: it must not take focus

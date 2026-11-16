@@ -40,6 +40,7 @@
 #include <QtWidgets/QAbstractItemView>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QFileDialog>
+#include <QtWidgets/QLineEdit>
 #include <QtWidgets/QScrollBar>
 #include <QtWidgets/QMenu>
 #include <QtGui/QWheelEvent>
@@ -372,6 +373,7 @@ QString paintedListRowText(QAbstractItemView *view, int row);
 struct MessageSettings {
     bool directChatSenderNames = false;
     bool senderOnlyWhenChanged = false;
+    bool youtube = true; // "Download video from YouTube" is offered for YouTube links
 };
 
 const MessageSettings &messageSettings()
@@ -383,6 +385,7 @@ const MessageSettings &messageSettings()
         QSettings ini(bridgeDirectory() + QStringLiteral("message-settings.ini"), QSettings::IniFormat);
         settings.directChatSenderNames = ini.value(QStringLiteral("messages/directChatSenderNames"), false).toBool();
         settings.senderOnlyWhenChanged = ini.value(QStringLiteral("messages/senderOnlyWhenChanged"), false).toBool();
+        settings.youtube = ini.value(QStringLiteral("messages/youtube"), true).toBool();
     }
     return settings;
 }
@@ -912,6 +915,54 @@ QString senderNameOf(QAbstractItemView *view, int row)
     return contactForMid(f.senderMid).name;
 }
 
+// A message row's drawn lines top to bottom (fragments on one baseline joined), without times and
+// receipts.
+QStringList drawnLines(const CaptureResult &cap)
+{
+    QList<CapturedText> items = cap.items;
+    std::stable_sort(items.begin(), items.end(), [](const CapturedText &a, const CapturedText &b) {
+        return qAbs(a.pos.y() - b.pos.y()) >= 1 ? a.pos.y() < b.pos.y() : a.pos.x() < b.pos.x();
+    });
+    QStringList lines;
+    qreal lastY = -1e9;
+    for (const CapturedText &it : std::as_const(items)) {
+        if (it.text.trimmed().isEmpty())
+            continue;
+        if (!lines.isEmpty() && qAbs(it.pos.y() - lastY) < 1)
+            lines.last() += it.text;
+        else
+            lines << it.text;
+        lastY = it.pos.y();
+    }
+    lines.removeIf([](const QString &l) { return isTimeOrReceipt(cleanText(l)); });
+    return lines;
+}
+
+// The YouTube address in a message: the message's own text first (ChatMessageData, then LINE's
+// accessible text of the row: whole addresses, not cut where LINE wraps the bubble; links may come
+// as <a href='...'>), else the drawn lines of `cap` (if given). "" if there is none.
+QString youTubeAddressOf(QAbstractItemView *view, const QModelIndex &idx, const CaptureResult *cap)
+{
+    static const QRegularExpression href(QStringLiteral("href\\s*=\\s*['\"]([^'\"]+)['\"]"),
+                                         QRegularExpression::CaseInsensitiveOption);
+    QStringList sources;
+    if (QObject *data = rowData(view, idx.row()); inheritsClass(data, "ChatMessageData"))
+        sources << readChatMessageData(data).text;
+    sources << idx.data(Qt::AccessibleTextRole).toString();
+    for (const QString &raw : std::as_const(sources)) {
+        if (raw.isEmpty())
+            continue;
+        QStringList lines;
+        for (auto it = href.globalMatch(raw); it.hasNext();)
+            lines << QTextDocumentFragment::fromHtml(it.next().captured(1)).toPlainText().trimmed();
+        lines += QTextDocumentFragment::fromHtml(QString(raw).replace(u'\n', QLatin1StringView("<br>"))).toPlainText().split(u'\n');
+        const QString url = firstYouTubeAddress(lines);
+        if (!url.isEmpty())
+            return url;
+    }
+    return cap ? firstYouTubeAddress(drawnLines(*cap)) : QString();
+}
+
 struct ProfileOffer {
     QPointer<QAbstractItemView> view;
     QPersistentModelIndex index;
@@ -922,6 +973,7 @@ struct ProfileOffer {
     bool reacted = false;   // the user has reacted: "Remove reaction" instead
     bool voice = false;     // a voice message: "Transcribe voice message"
     bool video = false;     // a video message: "Transcribe video"
+    QString youtube;        // its YouTube address: "Download video from YouTube"
     const char *noReaction = nullptr; // why not, for the log
 } g_profileOffer;
 
@@ -1881,6 +1933,8 @@ public:
                     view->window()->activateWindow();
                     view->setFocus(Qt::PopupFocusReason); // keeps LINE's current row (see the event filter)
                 }
+                // An accessibility action chooses its message: a pinned reading position is given up.
+                list->resetCursor();
                 if (view->currentIndex() != index)
                     view->setCurrentIndex(index);
                 if (menu)
@@ -2511,10 +2565,18 @@ void LineAccessibleList::schedulePrune() const
     });
 }
 
+// The main message list of a chat (as the keyboard filter's isMessageList(): not search or mention lists).
+static bool isMainMessageList(const QWidget *w)
+{
+    return isLineListView(w) && ancestorInheriting(w, "ChatMessageView") && !ancestorInheriting(w, "SearchDetailPanel")
+        && !ancestorInheriting(w, "LcListView") && !inMentionSuggester(w);
+}
+
 void LineAccessibleList::notifyCurrentRow()
 {
     QAbstractItemView *v = view();
-    // While the chat list cursor is elsewhere, LINE moving its current row is not the user's doing.
+    // A bridge cursor is the user's intent (the chat list cursor, or the reading position pinned in
+    // the messages): LINE moving its current row does not replace it.
     if (!v || !v->isVisible() || hasCursor() || (v->hasFocus() && preserveChatOpenScroll(v)))
         return;
     const QModelIndex current = v->currentIndex();
@@ -2544,6 +2606,9 @@ void LineAccessibleList::focusLastVisibleRow(bool keepLastRead)
 {
     QAbstractItemView *v = view();
     if (!v || !v->model())
+        return;
+    // Closing a message menu keeps the pinned reading position, not a stale current row of LINE's.
+    if (keepLastRead && hasCursor() && v->viewport()->rect().intersects(v->visualRect(m_cursor)))
         return;
     // A panel over the list (LINE's translation) can scroll it, or move LINE's own row.
     if (keepLastRead && m_lastRead.isValid() && m_lastRead.model() == v->model()) {
@@ -2636,13 +2701,26 @@ void LineAccessibleList::focusVisibleRowOnBacktab()
     }
     if (!target.isValid())
         return;
+    // The reading position is pinned here, before setCurrentIndex() can notify: LINE moves its own
+    // current row to the newest message a moment later, which must not take the user there
+    // (line-mr-for-win #23). Arrows and the message commands act on the pinned row.
+    m_cursor = target;
+    m_lastRead = target;
+    m_voiceOverRow = -1;
     const bool autoScroll = v->hasAutoScroll();
     const QPointer<QAbstractItemView> guard = v;
     QScopedValueRollback<bool> selecting(m_selectingVisibleRow, true);
     v->setAutoScroll(false);
     v->setCurrentIndex(target);
-    if (guard)
+    if (guard) {
         guard->setAutoScroll(autoScroll);
+        if (guard->hasFocus()) {
+            if (QAccessibleInterface *item = itemAt(target.row())) {
+                QAccessibleEvent event(item, QAccessible::Focus);
+                QAccessible::updateAccessibility(&event);
+            }
+        }
+    }
 }
 
 bool LineAccessibleList::focusRememberedRow()
@@ -2675,7 +2753,7 @@ bool LineAccessibleList::stepRow(int key)
         step = 1;
     else
         return false;
-    const int current = v->currentIndex().isValid() ? v->currentIndex().row() : -1;
+    const int current = cursorRow();
     if (current < 0) {
         focusEdgeRow(true);
         return true;
@@ -2699,7 +2777,7 @@ bool LineAccessibleList::stepRow(int key)
     // Only older history is loaded this way: at the newest message, Down reads it again at once
     // (below), so the user knows it is the last one.
     if (target == current && step < 0 && ancestorInheriting(v, "ChatMessageView")) {
-        const QPersistentModelIndex anchor(v->currentIndex());
+        const QPersistentModelIndex anchor(v->model()->index(current, 0, v->rootIndex()));
         // LINE only loaded history when a wheel movement CROSSED the edge: a wheel
         // sent while already at zero was accepted but did nothing. Re-arm that transition
         // by one scrollbar unit, then let LINE's own wheel handler cross the boundary.
@@ -2730,7 +2808,7 @@ void LineAccessibleList::continueEdgeStep(quint64 request, int key, QPersistentM
     QTimer::singleShot(100, listView, [listView, request, key, anchor, attempts] {
         auto *list = listFor(listView);
         if (!list || list->m_edgeRequest != request || !listView->hasFocus() || !listView->isVisible()
-            || !anchor.isValid() || anchor.model() != listView->model() || listView->currentIndex() != anchor) {
+            || !anchor.isValid() || anchor.model() != listView->model() || list->cursorRow() != anchor.row()) {
             return;
         }
         listView->doItemsLayout();
@@ -2840,6 +2918,21 @@ void LineAccessibleList::makeCurrent(int row)
     if (!v || !v->model())
         return;
     const QModelIndex idx = v->model()->index(row, 0, v->rootIndex());
+    // A pinned reading position moves by itself: LINE's current row is left alone.
+    if (isMainMessageList(v) && hasCursor()) {
+        const int previous = cursorRow();
+        m_cursor = idx;
+        m_lastRead = idx;
+        v->scrollTo(idx);
+        if (QAccessibleInterface *item = itemAt(row)) {
+            QAccessibleEvent event(item, QAccessible::Focus);
+            QAccessible::updateAccessibility(&event);
+            // VoiceOver ignores a second Focus event for the element it is on: read it again.
+            if (previous == row)
+                postAnnouncement(item->text(QAccessible::Name));
+        }
+        return;
+    }
     if (idx != v->currentIndex()) {
         v->setCurrentIndex(idx); // LINE reports the change (notifyCurrentRow)
         return;
@@ -2884,7 +2977,8 @@ QAccessible::State LineAccessibleList::state() const
 void LineAccessibleList::noteRowNameAsked(int row)
 {
     QAbstractItemView *v = view();
-    if (!v || !voiceOverRunning() || !ancestorInheriting(v, "ChatMessageView"))
+    const bool cursorList = isCursorList(v);
+    if (!v || !voiceOverRunning() || !(cursorList || ancestorInheriting(v, "ChatMessageView")))
         return;
     if (row != m_nameRow || !m_nameAt.isValid() || m_nameAt.elapsed() > 300) {
         m_nameRow = row;
@@ -2894,6 +2988,11 @@ void LineAccessibleList::noteRowNameAsked(int row)
     m_nameAt.start();
     if (++m_nameTimes != 2 || m_nameAfterKey)
         return;
+    if (cursorList) {
+        // Chat / friend list: a persistent index (LINE re-sorts the list when messages arrive).
+        m_voiceOverIndex = v->model() ? QPersistentModelIndex(v->model()->index(row, 0, v->rootIndex())) : QPersistentModelIndex();
+        return;
+    }
     m_voiceOverRow = row;
     m_voiceOverId = readChatMessageData(rowData(v, row)).id;
     static int logged = 0;
@@ -2901,11 +3000,29 @@ void LineAccessibleList::noteRowNameAsked(int row)
         a11yLog("[voiceover] on row %d", row);
 }
 
+void LineAccessibleList::useVoiceOverRowAsCursor()
+{
+    QAbstractItemView *v = view();
+    if (!v || !m_voiceOverIndex.isValid() || m_voiceOverIndex.model() != v->model())
+        return;
+    if (!hasCursor() || m_cursor != m_voiceOverIndex)
+        a11yLog("[keyboard] command on VoiceOver's row %d of the list (the cursor was on %d)", m_voiceOverIndex.row(), cursorRow());
+    m_cursor = m_voiceOverIndex;
+    m_voiceOverIndex = QPersistentModelIndex();
+}
+
 void LineAccessibleList::syncToVoiceOverRow()
 {
     QAbstractItemView *v = view();
-    if (!v || !v->model() || m_voiceOverRow < 0)
+    if (!v || !v->model())
         return;
+    if (m_voiceOverRow < 0) {
+        // A pinned reading position: LINE's own row follows it for the command (quietly:
+        // notifyCurrentRow() reports nothing while the cursor is set).
+        if (hasCursor() && isMainMessageList(v) && v->currentIndex() != QModelIndex(m_cursor))
+            v->setCurrentIndex(m_cursor);
+        return;
+    }
     int row = -1;
     if (!m_voiceOverId.isEmpty() && !m_voiceOverId.startsWith(QLatin1Char('l'))) {
         const int rows = rowCount();
@@ -2924,6 +3041,8 @@ void LineAccessibleList::syncToVoiceOverRow()
     if (row < 0)
         return;
     const QModelIndex target = v->model()->index(row, 0, v->rootIndex());
+    if (hasCursor())
+        m_cursor = target; // the pinned reading position goes where VoiceOver is
     if (target != v->currentIndex()) {
         a11yLog("[keyboard] command on VoiceOver's row %d (LINE's current row was %d)", row, v->currentIndex().row());
         v->setCurrentIndex(target);
@@ -2982,6 +3101,7 @@ QAccessibleInterface *LineAccessibleList::focusChild() const
 
 bool LineAccessibleList::moveCursor(int key)
 {
+    m_voiceOverIndex = QPersistentModelIndex(); // the keyboard's own step wins
     QAbstractItemView *v = view();
     const int rows = rowCount();
     if (!v || rows == 0)
@@ -3122,6 +3242,20 @@ bool LineAccessibleList::clickCursorRow()
     return true;
 }
 
+// The chat / friend list shows what its search field found (the field beside the list has text).
+static bool listSearchActive(const QAbstractItemView *v)
+{
+    for (const char *panel : { "MainChatPanel", "MainFriendPanel" }) {
+        if (QWidget *p = ancestorInheriting(v, panel)) {
+            for (const QLineEdit *field : p->findChildren<QLineEdit *>()) {
+                if (field->isVisible() && !field->text().trimmed().isEmpty())
+                    return true;
+            }
+        }
+    }
+    return false;
+}
+
 bool LineAccessibleList::openCursorRow(bool newWindow)
 {
     QAbstractItemView *v = view();
@@ -3133,9 +3267,15 @@ bool LineAccessibleList::openCursorRow(bool newWindow)
         return false;
     // Nothing to open if it is open already. For chats that is the one in the chat header: LINE's
     // current row also moves on a right click (a row's menu) without opening that chat.
+    // (Not while the list shows search results: LINE's current row there is no opened chat, and the
+    // user's Return did nothing on the row LINE happened to be on; user report 2026-11-16.)
     QObject *data = idx.data(kItemDataRole).value<QObject *>();
-    if (!newWindow && (inheritsClass(data, "ChatData") ? isOpenChat(v, data) : idx == QPersistentModelIndex(v->currentIndex())))
+    const bool searching = listSearchActive(v);
+    if (!newWindow && !searching
+        && (inheritsClass(data, "ChatData") ? isOpenChat(v, data) : idx == QPersistentModelIndex(v->currentIndex())))
         return false;
+    if (searching)
+        a11yLog("[keyboard] opening search result row %d (%s)", idx.row(), data ? data->metaObject()->className() : "-");
     // A click opens the chat the way LINE expects (setting the current row alone may not). With the
     // chat room hidden a click only selects the row: a double click opens its own window.
     v->scrollTo(idx);
@@ -3242,6 +3382,37 @@ bool LineAccessibleList::openSeeMore(int row)
     return false;
 }
 
+bool LineAccessibleList::downloadYouTube()
+{
+    QAbstractItemView *v = view();
+    const int row = cursorRow();
+    if (!v || !v->model() || row < 0)
+        return false;
+    if (!messageSettings().youtube) {
+        announce(label("Download from YouTube is turned off in message-settings.ini."), AnnounceWhen::LineActive);
+        return true;
+    }
+    const QModelIndex idx = v->model()->index(row, 0, v->rootIndex());
+    QString url = youTubeAddressOf(v, idx, nullptr);
+    if (url.isEmpty()) {
+        v->scrollTo(idx);
+        QRect r;
+        const CaptureResult cap = captureRow(v, row, &r);
+        if (cap.skipped) {
+            announce(label("LINE is busy. Press Control+Shift+Y again."), AnnounceWhen::LineActive);
+            return true;
+        }
+        url = youTubeAddressOf(v, idx, &cap);
+    }
+    // The address may be private: the log names only its host.
+    a11yLog("[youtube] message row %d: %s", row, url.isEmpty() ? "no YouTube link" : qPrintable(QUrl(url).host()));
+    if (url.isEmpty())
+        announce(label("This message has no YouTube link."), AnnounceWhen::LineActive);
+    else
+        requestYouTubeDownload(url);
+    return true;
+}
+
 bool LineAccessibleList::openLink(int row)
 {
     QAbstractItemView *v = view();
@@ -3255,23 +3426,7 @@ bool LineAccessibleList::openLink(int row)
     } else {
         QRect r;
         const CaptureResult cap = captureRow(v, row, &r);
-        QList<CapturedText> items = cap.items;
-        std::stable_sort(items.begin(), items.end(), [](const CapturedText &a, const CapturedText &b) {
-            return qAbs(a.pos.y() - b.pos.y()) >= 1 ? a.pos.y() < b.pos.y() : a.pos.x() < b.pos.x();
-        });
-        QStringList lines;
-        qreal lastY = -1e9;
-        for (const CapturedText &it : std::as_const(items)) {
-            if (it.text.trimmed().isEmpty())
-                continue;
-            if (!lines.isEmpty() && qAbs(it.pos.y() - lastY) < 1)
-                lines.last() += it.text;
-            else
-                lines << it.text;
-            lastY = it.pos.y();
-        }
-        lines.removeIf([](const QString &l) { return isTimeOrReceipt(cleanText(l)); });
-        url = firstWebAddress(lines);
+        url = firstWebAddress(drawnLines(cap));
     }
     if (url.isEmpty())
         return false;
@@ -3587,6 +3742,11 @@ void addProfileMenuItem(QWidget *menu)
                 l->transcribeMessage(index.row());
         });
     }
+    // A YouTube link: LINE MR.app downloads the video or its sound (packaging/YouTube.swift).
+    if (!offer.youtube.isEmpty()) {
+        const QString url = offer.youtube;
+        addExtraMenuItem(menu, label("Download video from YouTube"), [url] { requestYouTubeDownload(url); });
+    }
     // The user's own messages, notices and dates have no sender to show.
     if (offer.side != RowSide::Received) {
         a11yLog("[menu] no profile item: message row %d is not a received message (%d)", offer.index.row(), int(offer.side));
@@ -3692,6 +3852,8 @@ bool LineAccessibleList::openRowMenu()
         g_profileOffer.voice = cls.contains(QLatin1StringView("Audio"));
         g_profileOffer.video = cls.contains(QLatin1StringView("Video"));
     }
+    if (messageSettings().youtube)
+        g_profileOffer.youtube = youTubeAddressOf(v, idx, &cap);
     // Keep Memo has no reactions (LINE draws no reaction button there).
     if (g_profileOffer.reactable && inKeepMemo(v)) {
         g_profileOffer.reactable = false;
@@ -3981,10 +4143,14 @@ void saveTextFile(const QString &fileName, const QString &text)
     QTimer::singleShot(0, qApp, [fileName, text] {
         QString name = fileName;
         name.replace(QLatin1Char('/'), QLatin1Char('-')).replace(QLatin1Char(':'), QLatin1Char('-'));
+        // Starts in the folder saved to last (user request 2026-11-16; LINE's own panels do too).
+        const QString folder = lastSaveFolder();
         const QString path = QFileDialog::getSaveFileName(QApplication::activeWindow(), label("Save message as text file"),
-                                                          name + QStringLiteral(".txt"), QStringLiteral("*.txt"));
+                                                          (folder.isEmpty() ? QString() : folder + u'/') + name + QStringLiteral(".txt"),
+                                                          QStringLiteral("*.txt"));
         if (path.isEmpty())
             return;
+        rememberSaveFolder(QFileInfo(path).absolutePath());
         QFile file(path);
         if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate) || file.write(text.toUtf8()) < 0) {
             announce(label("The message could not be saved: %1").arg(file.errorString()), AnnounceWhen::LineActive);
@@ -4421,7 +4587,8 @@ bool LineAccessibleList::openReactions(int row, bool remove)
 bool LineAccessibleList::openMessageCommand(int command)
 {
     QAbstractItemView *v = view();
-    if (!v || !v->hasFocus() || !v->currentIndex().isValid() || command < 0 || command > 4)
+    const int row = cursorRow();
+    if (!v || !v->model() || !v->hasFocus() || row < 0 || command < 0 || command > 4)
         return false;
     if (g_messageCommand.source && g_messageCommand.at.isValid() && g_messageCommand.at.elapsed() < 3000)
         return true;
@@ -4436,11 +4603,16 @@ bool LineAccessibleList::openMessageCommand(int command)
     static const char *const names[] = { "Reply", "Delete", "Unsend", "Translate", "React" };
     g_messageCommand = PendingMessageCommand();
     g_messageCommand.source = v;
-    g_messageCommand.row = v->currentIndex();
+    // The row that was read: the bridge's cursor once it pins the reading position (Shift+Tab), which
+    // LINE's current row no longer follows. openRowMenu() opens that row's menu.
+    const QModelIndex idx = v->model()->index(row, 0, v->rootIndex());
+    g_messageCommand.row = idx;
     g_messageCommand.labels = labels[command];
     g_messageCommand.kind = QString::fromLatin1(names[command]);
     g_messageCommand.at.start();
-    a11yLog("[message-command] requested %s on row %d", names[command], v->currentIndex().row());
+    if (v->currentIndex() != idx)
+        v->setCurrentIndex(idx);
+    a11yLog("[message-command] requested %s on row %d", names[command], row);
     if (!openRowMenu()) {
         g_messageCommand = PendingMessageCommand();
         return false;
@@ -4876,11 +5048,11 @@ bool LineAccessibleList::openCursorRowInNewWindow()
     return false;
 }
 
-QString LineAccessibleList::recentMessageText(int n)
+int LineAccessibleList::recentMessageRow(int n)
 {
     QAbstractItemView *v = view();
     if (!v || n < 1)
-        return QString();
+        return -1;
     int found = 0;
     for (int row = rowCount() - 1; row >= 0; --row) {
         QObject *data = rowData(v, row);
@@ -4890,13 +5062,42 @@ QString LineAccessibleList::recentMessageText(int n)
             if (f.id.startsWith(QLatin1Char('l')) && f.senderMid.isEmpty())
                 continue;
         }
-        const QString text = rowText(v, row);
-        if (text.isEmpty())
+        if (rowText(v, row).isEmpty())
             continue;
         if (++found == n)
-            return text;
+            return row;
     }
-    return QString();
+    return -1;
+}
+
+QString LineAccessibleList::recentMessageText(int n)
+{
+    QAbstractItemView *v = view();
+    const int row = recentMessageRow(n);
+    return v && row >= 0 ? rowText(v, row) : QString();
+}
+
+bool LineAccessibleList::openRecentMessageMenu(int n)
+{
+    QAbstractItemView *v = view();
+    const int row = recentMessageRow(n);
+    if (!v || !v->model() || row < 0)
+        return false;
+    const QModelIndex index = v->model()->index(row, 0, v->rootIndex());
+    // As VO+Shift+M on that row: the keyboard goes into the list (the menu gives it back there) and
+    // the message becomes the current one.
+    if (!v->window()->isActiveWindow())
+        v->window()->activateWindow();
+    if (!v->hasFocus())
+        v->setFocus(Qt::PopupFocusReason); // keeps the row (see the event filter)
+    resetCursor();
+    m_voiceOverRow = -1;
+    v->scrollTo(index);
+    if (v->currentIndex() != index)
+        v->setCurrentIndex(index);
+    m_lastRead = index;
+    a11yLog("[keyboard] menu of recent message %d (row %d)", n, row);
+    return openRowMenu();
 }
 
 QAccessibleInterface *LineAccessibleList::childAt(int x, int y) const

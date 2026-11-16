@@ -9,6 +9,7 @@
 #include <QtCore/QFile>
 #include <QtCore/QFileInfo>
 #include <QtCore/QTimer>
+#include <QtCore/QUrl>
 
 #import <AppKit/AppKit.h>
 #import <objc/runtime.h>
@@ -37,6 +38,45 @@ void noteAnswered()
     });
 }
 
+// ---- The folder saved to last ----------------------------------------------------------------------
+// LINE starts every save panel in the home folder (Command+S on a message, Save as...). The folder
+// the user saved to last is put there instead (user request 2026-11-16) and kept in save-folder.txt
+// beside a11y.log. Only save panels: open panels (attach a file) keep LINE's own place.
+
+bool isPlainSavePanel(id panel)
+{
+    return ![panel isKindOfClass:[NSOpenPanel class]]
+        && ![NSStringFromClass([panel class]) containsString:@"Open"];
+}
+
+NSString *saveFolderFile()
+{
+    return (bridgeDirectory() + QStringLiteral("save-folder.txt")).toNSString();
+}
+
+void startInLastSaveFolder(NSSavePanel *panel)
+{
+    if (!isPlainSavePanel(panel))
+        return;
+    NSString *path = [[NSString stringWithContentsOfFile:saveFolderFile() encoding:NSUTF8StringEncoding error:nil]
+        stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (path.length == 0)
+        return;
+    // (A sandboxed application may name any folder here; whether it still exists is the panel's to find out.)
+    panel.directoryURL = [NSURL fileURLWithPath:path isDirectory:YES];
+    a11yLog("[save] the save panel starts in the folder saved to last");
+}
+
+void rememberSaveFolder(NSSavePanel *panel, NSModalResponse response, NSURL *url)
+{
+    if (response != NSModalResponseOK || !isPlainSavePanel(panel) || !url.isFileURL)
+        return;
+    NSString *folder = url.URLByDeletingLastPathComponent.path;
+    if (folder.length == 0)
+        return;
+    [folder writeToFile:saveFolderFile() atomically:YES encoding:NSUTF8StringEncoding error:nil];
+}
+
 void hookPanelClass(Class cls)
 {
     {
@@ -48,7 +88,10 @@ void hookPanelClass(Class cls)
                 noteAnswered();
                 return NSModalResponseOK;
             }
-            return original(self, sel);
+            startInLastSaveFolder(self);
+            const NSModalResponse response = original(self, sel);
+            rememberSaveFolder(self, response, [self URL]);
+            return response;
         }), method_getTypeEncoding(m));
     }
     {
@@ -69,7 +112,12 @@ void hookPanelClass(Class cls)
                 dispatch_async(dispatch_get_main_queue(), ^{ handler(NSModalResponseOK); });
                 return;
             }
-            original(self, sel, window, handler);
+            startInLastSaveFolder(self);
+            original(self, sel, window, ^(NSModalResponse response) {
+                rememberSaveFolder(self, response, [self URL]);
+                if (handler)
+                    handler(response);
+            });
         }), method_getTypeEncoding(m));
     }
     {
@@ -82,14 +130,37 @@ void hookPanelClass(Class cls)
                 dispatch_async(dispatch_get_main_queue(), ^{ handler(NSModalResponseOK); });
                 return;
             }
-            original(self, sel, handler);
+            startInLastSaveFolder(self);
+            original(self, sel, ^(NSModalResponse response) {
+                rememberSaveFolder(self, response, [self URL]);
+                if (handler)
+                    handler(response);
+            });
         }), method_getTypeEncoding(m));
     }
 }
 
 } // namespace
 
-void answerNextSavePanel(const QString &path, int timeoutMs, std::function<void(bool)> done)
+QString lastSaveFolder()
+{
+    QFile file(bridgeDirectory() + QStringLiteral("save-folder.txt"));
+    if (!file.open(QIODevice::ReadOnly))
+        return QString();
+    const QString folder = QString::fromUtf8(file.readAll()).trimmed();
+    return !folder.isEmpty() && QFileInfo(folder).isDir() ? folder : QString();
+}
+
+void rememberSaveFolder(const QString &folder)
+{
+    if (folder.isEmpty())
+        return;
+    QFile file(bridgeDirectory() + QStringLiteral("save-folder.txt"));
+    if (file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        file.write(folder.toUtf8());
+}
+
+void installSavePanelHooks()
 {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
@@ -98,6 +169,11 @@ void answerNextSavePanel(const QString &path, int timeoutMs, std::function<void(
         if (Class remote = NSClassFromString(@"NSRemoteSavePanel"))
             hookPanelClass(remote);
     });
+}
+
+void answerNextSavePanel(const QString &path, int timeoutMs, std::function<void(bool)> done)
+{
+    installSavePanelHooks();
     g_answerURL = [NSURL fileURLWithPath:path.toNSString()];
     g_answerDone = std::move(done);
     const quint64 request = ++g_answerRequest;
@@ -181,6 +257,25 @@ bool requestTranscription(const QString &file, const QString &kind, int seconds,
         a11yLog("[transcribe] LINE MR asked: %s, %d s (%d)", qPrintable(kind), seconds, int(ok));
         return ok;
     }
+}
+
+void requestYouTubeDownload(const QString &url)
+{
+    QString safeUrl = url;
+    safeUrl.remove(u'\t').remove(u'\n').remove(u'\r');
+    bool ok = false;
+    QFile request(bridgeDirectory() + QStringLiteral("youtube-request.txt"));
+    if (request.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        request.write(QStringLiteral("url\t%1\n").arg(safeUrl).toUtf8());
+        request.close();
+        @autoreleasepool {
+            ok = [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:@"linemr://youtube"]];
+        }
+    }
+    // The address may be private: only its host.
+    a11yLog("[youtube] LINE MR asked: %s (%d)", qPrintable(QUrl(url).host()), int(ok));
+    if (!ok)
+        announce(label("LINE MR.app could not be opened for the download."), AnnounceWhen::LineActive);
 }
 
 } // namespace line_a11y

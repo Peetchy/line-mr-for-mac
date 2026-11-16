@@ -1196,7 +1196,7 @@ void focusChatWindowInputLater()
 
 // Message commands in the message list: 0 Reply (Control+R), 1 Delete (Delete), 2 Unsend (Shift+
 // Delete), 3 Translate (Control+T), 4 React (Control+Shift+R), 5 Save (Command+S), 6 Transcribe
-// (Control+Shift+T). -1 for other keys.
+// (Control+Shift+T), 7 Download from YouTube (Control+Shift+Y). -1 for other keys.
 // The physical key counts (Thai and other layouts), as for the other commands.
 int messageCommandOf(const QKeyEvent *key)
 {
@@ -1212,6 +1212,8 @@ int messageCommandOf(const QKeyEvent *key)
         return 6;
     if (vk == kVK_ANSI_S && mods == Qt::ControlModifier)
         return 5;
+    if (vk == kVK_ANSI_Y && mods == (Qt::MetaModifier | Qt::ShiftModifier))
+        return 7;
     return -1;
 }
 
@@ -1539,10 +1541,17 @@ void focusListLater(const QString &tag, int tries = 10)
 }
 
 // A call rings or is shown in this process (LINE's incoming-call notification, LineCall's window).
+bool callWindowShowing();
+
 bool callInProgress()
 {
-    if (incomingCallShowing())
-        return true;
+    // (The notification and the call window are LineCall's; the keyboard is usually in LINE.)
+    return incomingCallShowing() || callWindowShowing() || remoteCallRinging() || remoteCallActive();
+}
+
+// A call window of this process.
+bool callWindowShowing()
+{
     for (QWidget *top : QApplication::topLevelWidgets()) {
         if (top->isVisible() && inheritsClass(top, "CallWindow"))
             return true;
@@ -1836,6 +1845,7 @@ void A11yEventFilter::watchdogTick()
         }
     }
     pollDumpRequest();
+    callHeartbeat(incomingCallShowing(), callWindowShowing());
     if (m_ticks % 10 == 0)
         logUpdateStatistics();
     if (m_ticks == 1 || m_ticks % 600 == 0)
@@ -2163,7 +2173,9 @@ bool A11yEventFilter::handleKeyPress(QWidget *w, QKeyEvent *key)
                 markUserActivity();
                 if (LineAccessibleList *list = LineAccessibleList::listFor(w)) {
                     list->syncToVoiceOverRow();
-                    if (command == 6)
+                    if (command == 7)
+                        list->downloadYouTube();
+                    else if (command == 6)
                         list->transcribeMessage(list->cursorRow());
                     else if (command == 5)
                         list->saveMessage();
@@ -2356,6 +2368,8 @@ bool A11yEventFilter::handleKeyPress(QWidget *w, QKeyEvent *key)
     if (list && menuKey && !key->isAutoRepeat() && (messages || isCursorList(w) || isContentList(w) || isPostList(w))) {
         if (messages)
             list->syncToVoiceOverRow();
+        else if (isCursorList(w))
+            list->useVoiceOverRowAsCursor();
         if (messages ? list->openRowMenu()
             : isContentList(w) || isPostList(w) ? list->openContentMenu() : list->openCursorMenu()) {
             m_cursorMenuKey.start();
@@ -2376,6 +2390,7 @@ bool A11yEventFilter::handleKeyPress(QWidget *w, QKeyEvent *key)
                    && !(key->modifiers() & (Qt::ControlModifier | Qt::AltModifier))) {
             if (key->isAutoRepeat())
                 return true;
+            list->useVoiceOverRowAsCursor();
             // Shift+Return: the chat in its own window (its menu's "Open in new window"), then its
             // input. With the chat room hidden LINE's menu has no such item: there Return does it.
             if (!friendList && key->key() != Qt::Key_Space && (key->modifiers() & Qt::ShiftModifier)
@@ -2457,6 +2472,16 @@ bool A11yEventFilter::handleCommandKey(QWidget *w, QKeyEvent *key)
         LineAccessibleList *list = messages ? LineAccessibleList::listFor(messages) : nullptr;
         if (!list) {
             announce(label("No chat is open"));
+            return true;
+        }
+        // The same digit twice quickly: that message's menu (user request 2026-11-16).
+        static QElapsedTimer lastPress;
+        static int lastDigit = 0;
+        const bool twice = digit == lastDigit && lastPress.isValid() && lastPress.elapsed() < 600;
+        lastDigit = twice ? 0 : digit;
+        lastPress.start();
+        if (twice && list->openRecentMessageMenu(digit)) {
+            m_cursorMenuKey.start();
             return true;
         }
         const QString text = list->recentMessageText(digit);
@@ -2697,6 +2722,9 @@ void A11yEventFilter::handleFocusIn(QWidget *w, Qt::FocusReason reason)
             || reason == Qt::PopupFocusReason || reason == Qt::ActiveWindowFocusReason || reason == Qt::MouseFocusReason
             || chatSearchShowsResult(w);
         if (LineAccessibleList *list = LineAccessibleList::listFor(w)) {
+            // After a search LINE's match counts, not a reading position pinned before it.
+            if (chatSearchShowsResult(w))
+                list->resetCursor();
             // Tab back into the same chat: the message last read.
             const bool tab = reason == Qt::TabFocusReason;
             if (reason == Qt::BacktabFocusReason)

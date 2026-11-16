@@ -6,12 +6,12 @@ A VoiceOver accessibility bridge for **LINE for macOS** (`/Applications/LINE.app
 
 ## การติดตั้งสำหรับผู้ใช้ / Installation
 
-**เวอร์ชันล่าสุด: [v0.3.0](https://github.com/Peetchy/line-mr-for-mac/releases/tag/v0.3.0)**
+**เวอร์ชันล่าสุด: [v0.4.0](https://github.com/Peetchy/line-mr-for-mac/releases/tag/v0.4.0)**
 
 | ไฟล์ | ลิงก์ดาวน์โหลด |
 |---|---|
-| **DMG (แนะนำ)**: ตัวติดตั้ง ตัวโปรแกรม และวิธีติดตั้ง | [LINE-MR-0.3.0.dmg](https://github.com/Peetchy/line-mr-for-mac/releases/download/v0.3.0/LINE-MR-0.3.0.dmg) |
-| **PKG**: ตัวติดตั้งอย่างเดียว | [LINE-MR-0.3.0.pkg](https://github.com/Peetchy/line-mr-for-mac/releases/download/v0.3.0/LINE-MR-0.3.0.pkg) |
+| **DMG (แนะนำ)**: ตัวติดตั้ง ตัวโปรแกรม และวิธีติดตั้ง | [LINE-MR-0.4.0.dmg](https://github.com/Peetchy/line-mr-for-mac/releases/download/v0.4.0/LINE-MR-0.4.0.dmg) |
+| **PKG**: ตัวติดตั้งอย่างเดียว | [LINE-MR-0.4.0.pkg](https://github.com/Peetchy/line-mr-for-mac/releases/download/v0.4.0/LINE-MR-0.4.0.pkg) |
 | เวอร์ชันทั้งหมด | [Releases](https://github.com/Peetchy/line-mr-for-mac/releases) |
 
 > English summary: download the `.dmg` above, allow it in **System Settings > Privacy & Security > Open Anyway** (it is not signed with an Apple Developer ID), install with `Install LINE MR.pkg` or drag `LINE MR` to Applications, then always open LINE through **LINE MR**. Details in Thai below; an English copy is in the disk image's Read Me.
@@ -24,7 +24,7 @@ A VoiceOver accessibility bridge for **LINE for macOS** (`/Applications/LINE.app
 
 ### ขั้นที่ 1: ดาวน์โหลด
 
-1. กดลิงก์ [LINE-MR-0.3.0.dmg](https://github.com/Peetchy/line-mr-for-mac/releases/download/v0.3.0/LINE-MR-0.3.0.dmg) ในตารางด้านบน หรือเข้าหน้า [Releases](https://github.com/Peetchy/line-mr-for-mac/releases) แล้วเลือกไฟล์ `.dmg` ในหัวข้อ Assets ของเวอร์ชันล่าสุด
+1. กดลิงก์ [LINE-MR-0.4.0.dmg](https://github.com/Peetchy/line-mr-for-mac/releases/download/v0.4.0/LINE-MR-0.4.0.dmg) ในตารางด้านบน หรือเข้าหน้า [Releases](https://github.com/Peetchy/line-mr-for-mac/releases) แล้วเลือกไฟล์ `.dmg` ในหัวข้อ Assets ของเวอร์ชันล่าสุด
 2. ถ้า Safari ถามว่าจะอนุญาตให้ดาวน์โหลดจาก github.com ไหม ให้กด **Allow**
 3. ไฟล์จะอยู่ในโฟลเดอร์ **Downloads** (เปิดด้วย Option+Command+L ใน Finder)
 4. (ไม่บังคับ) ตรวจว่าไฟล์ไม่เสียหาย ด้วยคำสั่งใน Terminal แล้วเทียบกับไฟล์ `SHA256SUMS.txt` ในหน้า Release:
@@ -159,6 +159,7 @@ xattr -dr com.apple.quarantine "/Applications/LINE MR.app"
 - **Calls:** runs inside `LineCall.app` too, so the call window's buttons (end call, microphone, speaker, video) and text can be read.
 - **Keyboard (like the Windows version):** Tab reaches every button, checkbox and link in reading order while VoiceOver runs; Space or Return presses. The chat and friend lists can be browsed with the arrows without opening each chat. In a chat, Return or Space on a message opens "See more" (long messages, then read line by line), its link, a voice message, photo, video or file; VO+Shift+M opens the message's menu.
 - **Other windows:** Settings, profiles and member lists (Qt Quick pages), share and create-chat / create-group pickers, a chat's Photos & videos / Links / Files, Notes, chat search results, the sticker window, the photo / video viewer (Play / Pause, seeking) and LINE's context menus are readable and usable from the keyboard.
+- **YouTube links:** Control+Shift+Y on a message with a YouTube link (or "Download video from YouTube" in its menu) downloads the video (MP4) or its sound (MP3), in the quality you choose, or the whole playlist. The download programs ([yt-dlp](https://github.com/yt-dlp/yt-dlp), Deno, FFmpeg) are downloaded the first time and keep themselves up to date.
 - **Reactions:** messages say which reactions they have; the message menu's "React" opens LINE's reaction picker.
 - **Languages:** labels the bridge adds follow LINE's language (English, Thai, Japanese, Simplified or Traditional Chinese).
 
@@ -235,12 +236,14 @@ The NVDA add-on's Alt keys are Control keys on the Mac (Option+Command, the keys
 | Control+T | In the messages: translate it | ในรายการข้อความ: แปลข้อความ |
 | Delete | In the messages: delete it (LINE asks to confirm) | ในรายการข้อความ: ลบข้อความ (LINE ถามยืนยัน) |
 | Shift+Delete | In the messages: unsend it (LINE asks to confirm) | ในรายการข้อความ: ยกเลิกการส่ง (LINE ถามยืนยัน) |
-| Command+S | In the messages: save it (media and files with LINE's Save as; text, locations and contacts as a .txt file) | ในรายการข้อความ: บันทึกข้อความ (สื่อและไฟล์ผ่าน Save as ของ LINE ส่วนข้อความ ตำแหน่ง และรายชื่อเป็นไฟล์ .txt) |
+| Command+S | In the messages: save it (media and files with LINE's Save as; text, locations and contacts as a .txt file). The save panel starts in the folder you saved to last | ในรายการข้อความ: บันทึกข้อความ (สื่อและไฟล์ผ่าน Save as ของ LINE ส่วนข้อความ ตำแหน่ง และรายชื่อเป็นไฟล์ .txt) |
 | Control+Shift+T | In the messages: turn a voice message or video into text (also in its menu). Choose Apple's speech recognition (the default) or a whisper.cpp model; the choice is remembered | ในรายการข้อความ: แปลงข้อความเสียงหรือวิดีโอเป็นข้อความ (มีในเมนูด้วย) เลือกระบบของ Apple (ค่าเริ่มต้น) หรือโมเดล whisper.cpp และจะจำตัวเลือกล่าสุด |
+| Control+Shift+Y | In the messages: download the video of the YouTube link in the message, as MP4 or MP3, also its whole playlist (also in its menu) | ในรายการข้อความ: ดาวน์โหลดวิดีโอจากลิงก์ YouTube ในข้อความ เป็น MP4 หรือ MP3 หรือทั้งเพลย์ลิสต์ (มีในเมนูด้วย) |
 | Shift+Return | In the chat list: open the chat in its own window | ในรายการแชท: เปิดแชทในหน้าต่างใหม่ |
-| Control+Shift+1 … 9 | Read a recent message (1 = newest) | อ่านข้อความล่าสุด (1 = ใหม่สุด) |
+| Control+Shift+1 … 9 | Read a recent message (1 = newest). The same key twice quickly: go to that message and open its menu | อ่านข้อความล่าสุด (1 = ใหม่สุด) กดปุ่มเดิมสองครั้งเร็ว ๆ: ไปที่ข้อความนั้นและเปิดเมนูของข้อความ |
 | Control+A / Control+D in LINE | Answer / decline an incoming call; during a call Control+D ends it. Without a call they do what they normally do in text fields (start of line / delete) | รับสาย / ปฏิเสธสาย; ระหว่างคุยกด Control+D วางสาย (ถ้าไม่มีสาย ปุ่มทำงานตามปกติในช่องพิมพ์) |
 | Control+Shift+A / Control+Shift+D from any app | Answer / decline while a LINE call rings | รับสาย / ปฏิเสธสายจากโปรแกรมอื่นขณะมีสายเรียกเข้า |
+| Control+Shift+W from any app | Report the incoming or active call and caller when known; otherwise say there is no call | แจ้งสายเรียกเข้าหรือสายสนทนาและชื่อผู้โทรเมื่อทราบ หากไม่มีสายจะแจ้งว่าไม่มีสาย (ใช้ได้จากทุกโปรแกรมขณะ LINE เปิดอยู่) |
 | Command+S in the photo viewer | Save the photo or video | บันทึกรูปหรือวิดีโอในหน้าดูรูป |
 
 In lists: chat and friend list — arrows, Page Up/Down, Home/End move without opening a chat, Return (or VO+Space) opens it and, in the chat list, moves to its message input once it has opened. Messages — Up/Down one message (Up on the oldest loads older ones), Page Up/Down about a screen, Home or ⌘↑ the oldest loaded message, End or ⌘↓ the newest; Return or Space opens "See more", a link, a voice message, photo, video or file, or plays a sound sticker again. Tab back into a chat returns to the message read last.
@@ -250,6 +253,21 @@ Menus (VO+Shift+M, or Shift+F10 / the PC menu key): on a message, a chat or frie
 Stickers: the package strip reads the package names; the first Return or Space on a sticker selects it and plays LINE's preview with its sound, the second sends it. Chat search (the magnifier in the chat header): Return searches, Up/Down go to older / newer matches, and the result is read ("Result 3 of 7" and the message).
 
 ในรายการ: รายการแชทและเพื่อน — ลูกศร Page Up/Down Home/End เลื่อนโดยไม่เปิดแชท, Return (หรือ VO+Space) เปิดแชท และในรายการแชทจะย้ายไปช่องพิมพ์ข้อความให้อัตโนมัติเมื่อแชทเปิดเสร็จ. ข้อความ — ลูกศรขึ้นลงทีละข้อความ (ขึ้นที่ข้อความเก่าสุดจะโหลดข้อความเก่ากว่า), Home หรือ ⌘↑ ไปข้อความเก่าสุดที่โหลดแล้ว, End หรือ ⌘↓ ไปข้อความล่าสุด, Return หรือ Space เปิด "ดูเพิ่มเติม" ลิงก์ ข้อความเสียง รูป วิดีโอ ไฟล์ หรือเล่นเสียงสติกเกอร์อีกครั้ง. เมนู (VO+Shift+M หรือ Shift+F10): ใช้ได้กับข้อความ แถวในรายการแชท/เพื่อน รูป/ลิงก์/ไฟล์ และโพสต์ในโน้ต; ลูกศรขวาเปิดเมนูย่อย ลูกศรซ้ายหรือ Escape ย้อนกลับ; เมนูข้อความมี "แสดงความรู้สึก" และในกลุ่มมี "แสดงโปรไฟล์ <ชื่อ>". สติกเกอร์: กดครั้งแรกเลือกและเล่นตัวอย่างพร้อมเสียง กดอีกครั้งเพื่อส่ง. ค้นหาในแชท: Return ค้นหา, ลูกศรขึ้นลงไปผลลัพธ์ก่อนหน้า/ถัดไป แล้วอ่านผลลัพธ์ให้ฟัง
+
+### Downloading from YouTube / ดาวน์โหลดจาก YouTube
+
+On a message with a YouTube link (a video, a Short, or a playlist), press Control+Shift+Y, or choose "Download video from YouTube" in its menu (VO+Shift+M). `LINE MR.app` opens a window:
+
+1. A notice says to download only videos you have the right to download (YouTube's terms of service allow nothing else). Tick "Don't show this again" to skip it next time (`defaults delete io.github.peetchy.line-mr youtubeShowNotice` brings it back).
+2. The first time, LINE MR downloads its download programs (about 130 MB to download, 240 MB on disk: yt-dlp, Deno, FFmpeg and ffprobe for Apple silicon) into `~/Library/Application Support/LINE MR/youtube`. Each comes from its own project's newest release and is checked against the SHA-256 that project publishes. Before a download, at most every 3 hours, LINE MR looks for newer versions and updates what changed, so downloading keeps working when YouTube changes. Without an internet connection the programs already there are used. Deleting the folder removes them.
+3. The link is checked (the window says why if the video is private, removed, age-restricted, blocked in your country or a live stream). Then choose: for a link to a video in a playlist, this video only or the whole playlist (with the number of videos); the format, Video (MP4) or Audio only (MP3); the quality (the resolutions the video has, with the size where YouTube gives it; MP3 at 128, 192 or 320 kbps); and the folder (Downloads unless you chose another; the choices are remembered).
+4. Download shows and speaks the progress (for a playlist "Downloading video 2 of 13"). Cancel or Escape stops it and removes the partial files. When it is done, Show in Finder shows the file. A playlist goes into a folder named after it, its videos numbered in order; videos that cannot be downloaded are skipped and counted.
+
+To turn the menu item and the key off, put `youtube=false` under `[messages]` in `$(getconf DARWIN_USER_CACHE_DIR)/jp.naver.line.mac/a11y/message-settings.ini`.
+
+Network access of LINE MR: the update check (GitHub), the speech model list and models for transcription (GitHub, Hugging Face; only when you use them), and the YouTube download (the programs from github.com/yt-dlp, github.com/denoland and ffmpeg.martin-riedl.de; the video from YouTube, only the link you chose). No chat contents are sent anywhere.
+
+บนข้อความที่มีลิงก์ YouTube กด Control+Shift+Y หรือเลือก "ดาวน์โหลดวิดีโอจาก YouTube" ในเมนูของข้อความ (VO+Shift+M) หน้าต่างของ LINE MR จะแจ้งข้อควรทราบเรื่องสิทธิ์ในการดาวน์โหลด (ติ๊ก "ไม่ต้องแสดงอีก" ได้) ครั้งแรกจะดาวน์โหลดโปรแกรมที่ใช้ดาวน์โหลด (ดาวน์โหลดประมาณ 130 MB ใช้พื้นที่ 240 MB: yt-dlp, Deno, FFmpeg) เก็บไว้ที่ `~/Library/Application Support/LINE MR/youtube` และอัปเดตเองเมื่อมีรุ่นใหม่ (ตรวจไม่เกินทุก 3 ชั่วโมง) จากนั้นตรวจลิงก์ แล้วให้เลือกวิดีโอนี้หรือทั้งเพลย์ลิสต์ รูปแบบ วิดีโอ (MP4) หรือเสียงอย่างเดียว (MP3) คุณภาพ และโฟลเดอร์ (ค่าเริ่มต้นคือ Downloads) ระหว่างดาวน์โหลดจะบอกความคืบหน้า กด Cancel หรือ Escape เพื่อยกเลิก เมื่อเสร็จกด "แสดงใน Finder" เพื่อดูไฟล์ ถ้าต้องการปิดความสามารถนี้ ให้ใส่ `youtube=false` ใต้ `[messages]` ในไฟล์ `message-settings.ini`
 
 ### Focus highlight / กรอบโฟกัส
 
@@ -277,6 +295,7 @@ width=4
 | `src/accessible_widgets.*` | Buttons, texts, inputs, menus |
 | `src/accessible_list.*` | Chat, friend and message list rows |
 | `src/line_introspect.*` | Offsets, safe memory reads, icon names, labels in five languages, links |
+| `src/line_strings.*` | LINE's own texts (its XLT string table) for controls the bridge names |
 | `src/text_capture.*` | Records what LINE paints (where to click, painted labels, LINE's icons) |
 | `src/accessible_quick.*` | Qt Quick windows (profiles, member lists, incoming calls) |
 | `src/full_text_view.*` | Long messages read line by line |
@@ -285,7 +304,7 @@ width=4
 | `src/text_recognition.*` | Vision OCR fallback |
 | `src/call_launch_hook.*`, `src/platform_shim.mm` | Getting the bridge into LineCall.app |
 | `tools/`, `tests/` | Launcher, AX inspector, verification script |
-| `packaging/` | `LINE MR.app` launcher, Info.plist, installer pages, Read Me for the disk image |
+| `packaging/` | `LINE MR.app`: launcher (`LineMR.swift`), transcription (`Transcribe.swift`), YouTube download (`YouTube.swift`), Info.plist, installer pages, Read Me for the disk image |
 
 ## Status and limits
 

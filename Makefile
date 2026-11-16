@@ -21,7 +21,7 @@ CALL_A11Y_DIR := $(CACHE_DIR)/jp.naver.line.mac.LineCall/a11y
 CALL_INSTALLED := $(CALL_A11Y_DIR)/platformthemes/libline_a11y.dylib
 
 # Distribution: LINE MR.app (opens LINE with the bridge), an installer package and a disk image.
-VERSION      ?= 0.3.0
+VERSION      ?= 0.4.0
 APP_ID       := io.github.peetchy.line-mr
 APP_NAME     := LINE MR
 APP_BUNDLE   := $(BUILD)/$(APP_NAME).app
@@ -43,7 +43,7 @@ LDFLAGS      := -arch $(ARCH) -mmacosx-version-min=$(MACOS_MIN) -dynamiclib \
                 -framework AppKit -framework Foundation -framework Vision -framework CoreGraphics -framework Carbon \
                 -Wl,-rpath,@executable_path/../Frameworks -Wl,-rpath,$(QT_FW)
 
-SOURCES      := src/a11y_log.mm src/keyboard_help.mm src/transcribe_request.mm src/a11y_diagnostics.mm src/line_introspect.mm src/accessible_widgets.mm src/accessible_list.mm src/qt_signal_utils.mm src/a11y_update_filter.mm src/text_recognition.mm src/call_launch_hook.mm \
+SOURCES      := src/a11y_log.mm src/keyboard_help.mm src/transcribe_request.mm src/a11y_diagnostics.mm src/line_introspect.mm src/line_strings.mm src/accessible_widgets.mm src/accessible_list.mm src/qt_signal_utils.mm src/a11y_update_filter.mm src/text_recognition.mm src/call_launch_hook.mm \
                 src/text_capture.mm src/a11y_announce.mm src/accessible_quick.mm src/full_text_view.mm src/call_keys.mm src/native_buttons.mm src/navigation_order.mm src/video_controls.mm src/focus_highlight.mm \
                 src/a11y_event_filter.mm src/plugin_main.mm
 HEADERS      := $(wildcard src/*.h)
@@ -136,10 +136,10 @@ $(WHISPER_CLI):
 	"$(CMAKE)" --build $(BUILD)/whisper-build --target whisper-cli -j 6
 
 # The bundle's name has a space, which make targets cannot have: a stamp file stands for it.
-$(APP_STAMP): packaging/LineMR.swift packaging/Transcribe.swift packaging/speech-models.json packaging/Info.plist.in $(DYLIB) $(WHISPER_CLI)
+$(APP_STAMP): Makefile packaging/LineMR.swift packaging/Transcribe.swift packaging/YouTube.swift packaging/speech-models.json packaging/Info.plist.in $(DYLIB) $(WHISPER_CLI)
 	rm -rf "$(APP_BUNDLE)"
 	mkdir -p "$(APP_BUNDLE)/Contents/MacOS" "$(APP_BUNDLE)/Contents/Resources"
-	cat packaging/Transcribe.swift packaging/LineMR.swift > $(BUILD)/LineMR-all.swift
+	cat packaging/Transcribe.swift packaging/YouTube.swift packaging/LineMR.swift > $(BUILD)/LineMR-all.swift
 	$(SWIFTC) -O -swift-version 5 -target $(ARCH)-apple-macos$(MACOS_MIN) $(BUILD)/LineMR-all.swift \
 	  -o "$(APP_BUNDLE)/Contents/MacOS/$(APP_NAME)"
 	sed -e 's/@VERSION@/$(VERSION)/g' -e 's/@APP_ID@/$(APP_ID)/g' packaging/Info.plist.in > "$(APP_BUNDLE)/Contents/Info.plist"
